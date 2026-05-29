@@ -65,7 +65,7 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent // Diperlukan untuk membaca pesan text prefix (?)
+        GatewayIntentBits.MessageContent // Diperlukan untuk membaca teks prefix (Wajib aktif di Developer Portal!)
     ]
 });
 
@@ -367,12 +367,12 @@ client.on("interactionCreate", async (interaction) => {
         { name: "🎯 Option 2: Global Slash Commands", value: "• `/ask prompt: [text] file: [optional] message_id: [optional]`\n• `/reset` — Clears conversation context history memory.\n• `/help` — Generates this structural view interface menu documentation frame manual." }
       )
       .setFooter({ text: "Hybrid Architecture Mode Build 2026" });
-    return interaction.reply({ embeds: [helpEmbed] });
+    return interaction.reply({ embeds: [helpEmbed] }).catch(() => {});
   }
 
   if (interaction.commandName === "reset") {
     sessions.delete(getSessionId(interaction.channelId, interaction.user.id));
-    return interaction.reply({ content: "🧹 **Conversation scope cleared successfully!**" });
+    return interaction.reply({ content: "🧹 **Conversation scope cleared successfully!**" }).catch(() => {});
   }
 
   if (interaction.commandName === "ask") {
@@ -385,29 +385,41 @@ client.on("interactionCreate", async (interaction) => {
 
 // --- MODULE EVENT 2: NATIVE TEXT PREFIX COMMAND HANDLER ---
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+  // 1. Validasi keamanan dasar (Abaikan bot dan pesan kosong)
+  if (message.author.bot || !message.content) return;
 
+  // 2. Cek kesesuaian prefix
+  if (!message.content.startsWith(PREFIX)) return;
+
+  // 3. Mengurai argumen dengan memisahkan spasi ganda ekstra secara dinamis
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // --- REGISTRASI PERINTAH PREFIX: RESET ---
   if (command === "reset") {
     sessions.delete(getSessionId(message.channelId, message.author.id));
-    return message.reply("🧹 **Conversation scope cleared successfully!**");
+    return message.reply("🧹 **Conversation scope cleared successfully!**").catch(() => {});
   }
 
+  // --- REGISTRASI PERINTAH PREFIX: ASK ---
   if (command === "ask") {
     const promptText = args.join(" ").trim();
-    if (!promptText) return message.reply(`❌ **Invalid Input!** Format instruction template syntax: \`${PREFIX}ask [your prompt here]\``);
+    
+    // Jika hanya mengetik "?ask " tanpa teks pertanyaan tambahan
+    if (!promptText) {
+      return message.reply(`❌ **Invalid Input!** Format instruction template syntax: \`${PREFIX}ask [your prompt here]\``).catch(() => {});
+    }
 
-    // Otomatis tangkap file yang diunggah langsung di pesan teks tersebut
+    // Mengambil attachment jika ada file yang diunggah langsung bersamaan dengan text prefix
     const uploadedFile = message.attachments.first() || null;
 
-    // Otomatis deteksi jika user menggunakan fitur klik kanan -> Reply Discord ke suatu pesan teks
+    // Otomatisasi deteksi jika user me-reply pesan orang lain menggunakan fitur native Discord Reply
     let targetMessageId = null;
     if (message.reference && message.reference.messageId) {
       targetMessageId = message.reference.messageId;
     }
 
+    // Jalankan pipeline logika inti AI
     await processAiRequest(message, promptText, uploadedFile, targetMessageId);
   }
 });
