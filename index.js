@@ -105,7 +105,7 @@ client.on('ready', async () => {
         activities: [{ 
             name: "customstatus", 
             type: ActivityType.Custom, 
-            state: `💬 ${PREFIX}ask or /ask and /help` 
+            state: `${PREFIX}ask or /help` 
         }],
         status: "online",
     });
