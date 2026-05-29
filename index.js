@@ -10,31 +10,25 @@ const axios = require("axios");
 const FormData = require("form-data");
 const crypto = require("crypto");
 
-// --- FEATURE 1: ENVIRONMENT VARIABLES VALIDATION AT STARTUP ---
+// --- ENVIRONMENT VARIABLES VALIDATION ---
 const REQUIRED_ENVS = ["BOT_TOKEN", "API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY"];
 REQUIRED_ENVS.forEach((envName) => {
   if (!process.env[envName]) {
-    console.error(`[❌ ERROR] Environment variable ${envName} is missing in your .env file!`);
+    console.error(`[❌ ERROR] Environment variable ${envName} is missing!`);
     process.exit(1);
   }
 });
 
-// --- CONFIGURATION ---
-const CONTEXT_SCOPE = "channel_user"; 
+const PREFIX = "?"; // Konfigurasi Prefix Teks Manual
 const MAX_HISTORY = 10; 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; 
-
-// --- COOLDOWN CONFIGURATION (5-Second Delay) ---
 const COOLDOWN_TIME = 5000; 
 const cooldowns = new Map();
-
-// --- BANNED WORDS LIST ---
 const BANNED_WORDS = ["exploit", "crash", "bypass system", "force shutdown"];
 
-// --- MODEL SELECTION ---
 const VISION_MODELS = [
-  { provider: "google-native", name: "gemini-2.5-flash" }, 
+  { provider: "google-native", name: "gemini-2.5-flash" }, // Diutamakan karena terbaru, cepat, dan murah di 2026
   { provider: "google-native", name: "gemini-2.0-flash" },
   { provider: "openrouter", name: "google/gemini-2.0-flash-001" },
   { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
@@ -45,8 +39,8 @@ const VISION_MODELS = [
 ];
 
 const TEXT_MODELS = [    
-  { provider: "google-native", name: "gemini-2.5-flash" }, 
-  { provider: "openrouter", name: "deepseek/deepseek-r1:free" }, 
+  { provider: "google-native", name: "gemini-2.5-flash" }, // Dipasang paling atas untuk menghemat biaya & performa stabil
+  { provider: "openrouter", name: "deepseek/deepseek-r1:free" }, // Model gratis berperforma tinggi alternatif
   { provider: "google-native", name: "gemini-2.0-flash" },
   { provider: "groq", name: "llama-3.3-70b-versatile" },
   { provider: "groq", name: "openai/gpt-oss-120b" },
@@ -58,7 +52,6 @@ const TEXT_MODELS = [
   { provider: "openrouter", name: "openrouter/free" }
 ];
 
-// --- INITIALIZE PROVIDERS ---
 const OR_API_KEY = process.env.API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -72,16 +65,8 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent
-    ],
-    presence: {
-        status: 'online',
-        activities: [{
-            name: "Custom Status",
-            state: "/ask or /help",
-            type: 4 
-        }]
-    }
+        GatewayIntentBits.MessageContent // Diperlukan untuk membaca pesan text prefix (?)
+    ]
 });
 
 // --- DEPLOY SLASH COMMANDS ---
@@ -98,6 +83,11 @@ const commands = [
             option.setName("file")
                 .setDescription("Upload a PDF, Audio, Video, or Image file (Max 10MB)")
                 .setRequired(false)
+        )
+        .addStringOption(option =>
+            option.setName("message_id")
+                .setDescription("Paste the Discord Message ID you want to reply to as context")
+                .setRequired(false)
         ),
     new SlashCommandBuilder()
         .setName("reset")
@@ -109,14 +99,10 @@ const commands = [
 
 client.on('ready', async () => {
     console.log(`[🚀] Bot is ready as ${client.user.tag}`);
-    
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
-        console.log('[🔄] Starting Slash Commands (/) registration to Discord...');
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands },
-        );
+        console.log('[🔄] Updating Slash Commands (/) registration to Discord...');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('[✅] Successfully registered Slash Commands globally!');
     } catch (error) {
         console.error('[❌] Failed to register Slash Commands:', error);
@@ -125,22 +111,14 @@ client.on('ready', async () => {
 
 const sessions = new Map();
 
-// --- HELPER FUNCTIONS ---
-
-function getSessionId(interaction) {
-  switch (CONTEXT_SCOPE) {
-    case "user": return interaction.user.id;
-    case "channel": return interaction.channelId;
-    case "server": return interaction.guildId ? interaction.guildId : interaction.channelId;
-    case "channel_user": default: return `${interaction.channelId}-${interaction.user.id}`;
-  }
+// --- HELPERS ---
+function getSessionId(channelId, userId) {
+  return `${channelId}-${userId}`;
 }
 
 function sanitizeMessagesForModel(messages, isVisionModel) {
   return messages.map(msg => {
-    if (msg.role === "system") return msg;
-    if (typeof msg.content === "string") return msg;
-    
+    if (msg.role === "system" || typeof msg.content === "string") return msg;
     if (!isVisionModel && Array.isArray(msg.content)) {
       const textOnly = msg.content.filter(c => c.type === "text").map(c => c.text).join("\n");
       return { ...msg, content: textOnly };
@@ -153,29 +131,24 @@ async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
   const uniqueId = crypto.randomUUID();
   const inputPath = path.join(tempDir, `in_${uniqueId}.${isAudioOnly ? 'mp3' : 'mp4'}`);
   const audioPath = path.join(tempDir, `out_${uniqueId}.mp3`);
-  
   try {
     const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
     fs.writeFileSync(inputPath, Buffer.from(response.data));
-    
     if (!isAudioOnly) {
       await new Promise((resolve, reject) => {
         ffmpeg(inputPath).toFormat("mp3").duration(120).on("end", resolve).on("error", reject).save(audioPath);
       });
     }
-
     const fileToUpload = isAudioOnly ? inputPath : audioPath;
     const form = new FormData();
     form.append("file", fs.createReadStream(fileToUpload));
     form.append("model", "openai/whisper-large-v3");
-    
     const whisperRes = await axios.post("https://openrouter.ai/api/v1/audio/transcriptions", form, {
       headers: { ...form.getHeaders(), "Authorization": `Bearer ${OR_API_KEY}` },
       timeout: 60000 
     });
     return whisperRes.data.text || "(No audible speech detected)";
   } catch (error) {
-    console.error(`[Audio/Video Error]: ${error.message}`);
     return `(Transcription failed: ${error.message})`;
   } finally {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
@@ -187,19 +160,23 @@ function splitMessage(text, maxLength = 2000) {
   const chunks = [];
   let currentChunk = "";
   let isInsideCodeBlock = false;
-  let codeLanguage = "";
+  let codeLanguage = ""; 
   const lines = text.split("\n");
+
   for (const line of lines) {
     if (line.trim().startsWith("```")) {
       isInsideCodeBlock = !isInsideCodeBlock;
-      codeLanguage = isInsideCodeBlock ? line.trim().substring(3) : "";
+      if (isInsideCodeBlock) codeLanguage = line.trim().substring(3).trim();
+      else codeLanguage = "";
     }
+
     if (currentChunk.length + line.length + 1 > maxLength) {
       if (isInsideCodeBlock) {
-        chunks.push(currentChunk + "\n```");
+        currentChunk += "\n```";
+        chunks.push(currentChunk.trim());
         currentChunk = "```" + codeLanguage + "\n" + line + "\n";
       } else {
-        chunks.push(currentChunk);
+        chunks.push(currentChunk.trim());
         currentChunk = line + "\n";
       }
     } else {
@@ -212,253 +189,227 @@ function splitMessage(text, maxLength = 2000) {
 
 async function fetchWithFallback(messagesArray, isVisionContext) {
   const modelList = isVisionContext ? VISION_MODELS : TEXT_MODELS;
-
   for (const model of modelList) {
     try {
-      console.log(`[🤖] Attempting ${model.provider}: ${model.name}`);
       const safeMessages = sanitizeMessagesForModel(messagesArray, isVisionContext);
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("API_TIMEOUT_15S")), 15000)
-      );
-
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("API_TIMEOUT_15S")), 15000));
       let apiCallPromise;
 
       if (model.provider === "openrouter") {
         apiCallPromise = (async () => {
           const completion = await openrouter.chat.completions.create({ model: model.name, messages: safeMessages }, { timeout: 14000 });
-          return { text: completion.choices[0].message.content, modelInfo: `${model.name} via OpenRouter` };
+          return { text: completion.choices[0].message.content };
         })();
-      } 
-      
-      else if (model.provider === "groq") {
-        apiCallPromise = (async () => {
-          const completion = await groq.chat.completions.create({ model: model.name, messages: safeMessages }, { timeout: 14000 });
-          return { text: completion.choices[0].message.content, modelInfo: `${model.name} via Groq` };
-        })();
-      }
-      
-      else if (model.provider === "google-native") {
+      } else if (model.provider === "google-native") {
         apiCallPromise = (async () => {
           const systemPrompt = safeMessages.find(msg => msg.role === "system")?.content || "";
           const genModel = genAI.getGenerativeModel({ model: model.name, systemInstruction: systemPrompt });
-          
           const formattedHistory = safeMessages.slice(1, -1).map(msg => {
-              let textContent = "";
-              if (typeof msg.content === "string") textContent = msg.content;
-              else if (Array.isArray(msg.content)) textContent = msg.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+              let textContent = typeof msg.content === "string" ? msg.content : msg.content.filter(c => c.type === "text").map(c => c.text).join("\n");
               return { role: msg.role === "assistant" ? "model" : "user", parts: [{ text: textContent }] };
           });
-          
           const chat = genModel.startChat({ history: formattedHistory.length > 0 ? formattedHistory : undefined });
           const lastMsg = safeMessages[safeMessages.length - 1];
-          
           if (Array.isArray(lastMsg.content)) {
             const textPart = lastMsg.content.find(c => c.type === "text")?.text || "";
-            const imageParts = await Promise.all(
-              lastMsg.content.filter(c => c.type === "image_url").map(async (img) => {
+            const imageParts = await Promise.all(lastMsg.content.filter(c => c.type === "image_url").map(async (img) => {
                 const response = await axios.get(img.image_url.url, { responseType: 'arraybuffer' });
                 return { inlineData: { data: Buffer.from(response.data).toString("base64"), mimeType: "image/png" } };
-              })
-            );
+            }));
             const result = await chat.sendMessage([textPart, ...imageParts]);
-            return { text: result.response.text(), modelInfo: `${model.name} (Google Native)` };
+            return { text: result.response.text() };
           } else {
             const result = await chat.sendMessage(lastMsg.content);
-            return { text: result.response.text(), modelInfo: `${model.name} (Google Native)` };
+            return { text: result.response.text() };
           }
         })();
       }
-
-      const result = await Promise.race([apiCallPromise, timeoutPromise]);
-      console.log(`[✅] Success: ${model.name}`);
-      return result;
-
-    } catch (error) {
-      const errorMsg = error.message || "";
-      if (errorMsg === "API_TIMEOUT_15S") {
-         console.warn(`[⚠️] ${model.provider} (${model.name}) freeze timeout detected (15s). Skipping model...`);
-      } else if (errorMsg.includes("429")) {
-         console.warn(`[⚠️] ${model.provider} (${model.name}) rate limited (429). Jumping to next fallback...`);
-      } else {
-         console.warn(`[⚠️] ${model.provider} (${model.name}) failed: ${errorMsg}`);
-      }
-      continue; 
-    }
+      return await Promise.race([apiCallPromise, timeoutPromise]);
+    } catch (e) { continue; }
   }
-  
-  throw new Error("All providers and models failed.");
+  throw new Error("All models failed.");
 }
 
-// --- CORE INTERACTION EVENT ---
+// --- CORE LOGIC HANDLER FOR BOTH INTERACTION AND PREFIX MESSAGE ---
+async function processAiRequest(context, promptText, fileAttachment, targetMessageId) {
+  const isInteraction = !!context.commandName;
+  const userId = isInteraction ? context.user.id : context.author.id;
+  const channelId = context.channelId;
+  const sessionId = getSessionId(channelId, userId);
+
+  // Cooldown Validation
+  const lastUsed = cooldowns.get(userId);
+  if (lastUsed && (Date.now() - lastUsed < COOLDOWN_TIME)) {
+    const msg = "⏳ Cooldown active. Please wait.";
+    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+  }
+  cooldowns.set(userId, Date.now());
+
+  // Safety Banned Words Validation
+  if (BANNED_WORDS.some(word => promptText.toLowerCase().includes(word))) {
+    const msg = "❌ Request denied by system filter safety guidelines.";
+    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+  }
+
+  // File size check
+  if (fileAttachment && fileAttachment.size > MAX_FILE_SIZE) {
+    const msg = "❌ Attached payload exceeds maximum 10MB limit threshold.";
+    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+  }
+
+  // Visual Deferred Feedback
+  let progressStateMessage;
+  if (isInteraction) {
+    await context.deferReply();
+  } else {
+    progressStateMessage = await context.reply("🧠 *Thinking and parsing instructions...*").catch(() => null);
+  }
+
+  const updateStatusText = async (text) => {
+    if (isInteraction) await context.editReply(text).catch(() => {});
+    else if (progressStateMessage) await progressStateMessage.edit(text).catch(() => {});
+  };
+
+  const tempDir = path.join(__dirname, "temp");
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+
+  try {
+    let userSession = sessions.get(sessionId) || { 
+      messages: [{ role: "system", content: "You are a smart Discord assistant. Auto-detect and mirror user language." }], 
+      lastUpdated: Date.now(), hasImageInHistory: false 
+    };
+    userSession.lastUpdated = Date.now();
+
+    let extractedData = "";
+
+    // 1. Fetch Target Message Context (If target ID provided or native Discord reply used)
+    if (targetMessageId) {
+      await updateStatusText("🔍 *Fetching target reference context...*");
+      const targetMsg = await context.channel.messages.fetch(targetMessageId).catch(() => null);
+      if (targetMsg) {
+        extractedData += `\n[REFERENCED TEXT CONTEXT (Author: ${targetMsg.author.username})]: "${targetMsg.content}"\n`;
+      }
+    }
+
+    // 2. Parse file extraction
+    let isImage = false;
+    if (fileAttachment) {
+      await updateStatusText("📂 *Processing attachment extensions...*");
+      const filename = fileAttachment.name.toLowerCase();
+      const mimeType = fileAttachment.contentType ? fileAttachment.contentType.toLowerCase() : "";
+
+      if (filename.endsWith(".pdf") || mimeType === "application/pdf") {
+        const res = await axios.get(fileAttachment.url, { responseType: 'arraybuffer' });
+        const data = await pdf(Buffer.from(res.data));
+        extractedData += `\n[PDF EXTRACTED TEXT: ${fileAttachment.name}]\n${data.text.substring(0, 4000)}\n`;
+      } 
+      else if (filename.endsWith(".mp3") || filename.endsWith(".mp4") || filename.endsWith(".wav") || filename.endsWith(".m4a") || mimeType.startsWith("audio/") || mimeType.startsWith("video/")) {
+        const isAudioOnly = filename.endsWith(".mp3") || filename.endsWith(".wav") || filename.endsWith(".m4a") || mimeType.startsWith("audio/");
+        const transcript = await transcribeMedia(fileAttachment.url, tempDir, isAudioOnly);
+        extractedData += `\n[MEDIA TRANSCRIPT]: ${transcript}\n`;
+      } 
+      else if (filename.endsWith(".jpg") || filename.endsWith(".jpeg") || filename.endsWith(".png") || filename.endsWith(".webp") || mimeType.startsWith("image/")) {
+        isImage = true;
+      }
+    }
+
+    const finalPrompt = `${extractedData}\nUSER: ${promptText}`.trim();
+    let currentPayload = isImage ? [{ type: "text", text: finalPrompt }, { type: "image_url", image_url: { url: fileAttachment.url } }] : finalPrompt;
+
+    if (isImage) userSession.hasImageInHistory = true;
+    const isVisionContext = isImage || userSession.hasImageInHistory;
+
+    const requestMessages = [...userSession.messages, { role: "user", content: currentPayload }];
+    await updateStatusText("🧠 *Formulating solution payload...*");
+
+    const { text: responseText } = await fetchWithFallback(requestMessages, isVisionContext);
+
+    userSession.messages.push({ role: "user", content: currentPayload }); 
+    userSession.messages.push({ role: "assistant", content: responseText });
+    sessions.set(sessionId, userSession);
+
+    const finalResponse = `> **Prompt:** ${promptText}\n\n${responseText}`;
+    const chunks = splitMessage(finalResponse);
+
+    // Final Dispatch outputs
+    if (isInteraction) {
+      await context.editReply(chunks[0]).catch(() => {});
+      for (let i = 1; i < chunks.length; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        await context.followUp(chunks[i]);
+      }
+    } else {
+      if (progressStateMessage) await progressStateMessage.edit(chunks[0]).catch(() => {});
+      for (let i = 1; i < chunks.length; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        await context.channel.send(chunks[i]);
+      }
+    }
+
+  } catch (error) {
+    const errorAlert = "`❌ An error occurred while computing your upstream backend pipeline.`";
+    if (isInteraction) await context.editReply(errorAlert).catch(() => {});
+    else if (progressStateMessage) await progressStateMessage.edit(errorAlert).catch(() => {});
+  }
+}
+
+// --- MODULE EVENT 1: SLASH COMMAND INTERACTION HANDLER ---
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const sessionId = getSessionId(interaction);
-
-  // --- HANDLER: /HELP COMMAND ---
   if (interaction.commandName === "help") {
     const helpEmbed = new EmbedBuilder()
       .setColor("#5865F2") 
-      .setTitle("🤖 AI Assistant Bot User Manual")
-      .setDescription("Welcome! This is a smart AI assistant powered by multiple backends (Google Native, Groq, OpenRouter) with automatic language detection mirroring capabilities.")
+      .setTitle("🤖 AI Assistant Hybrid Manual Guide")
+      .setDescription("This system adapts to both Slash Commands (`/`) and Native Prefix Triggers (`?`). Choose whichever fits your workflow efficiency targets best!")
       .addFields(
-        { name: "📋 Available Commands (/) Slashing", value: "• `/ask [prompt]` - Ask any question to the AI with real-time state emulation.\n• `/reset` - Clear your personal chat history/memory context with the AI.\n• `/help` - Bring up this help menu interface manual." },
-        { name: "📎 Advanced File Analysis Integration", value: "When processing `/ask`, you can optionally upload an attachment **up to 10 MB**:\n📂 **PDF**: Automatically parses and extracts textual document data.\n🖼️ **Images**: Enables multimodal vision analysis mode for visual assets.\n🎵 **Audio & Video**: Transcribes human spoken speech to text using Whisper API." },
-        { name: "⚡ Premium Architecture Mechanisms", value: "• **Multi-Provider Fallback**: If a primary model fails or gets rate limited, it switches to fallbacks within 15 seconds.\n• **Anti-Spam Cooldown Rate**: Imposes a mandatory 5-second waiting interval threshold per user.\n• **Auto-Language Mirroring**: The AI reads your prompt's language and outputs responses in that exact match." }
+        { name: "⚡ Option 1: Native Prefix Commands (Recommended for Files & Replies)", value: `• \`${PREFIX}ask [Your question]\` — Prompts the AI model.\n• \`${PREFIX}reset\` — Clears conversation session context memory.\n\n*Advantages:* You can use Discord's native **Reply** feature targeting any text message or upload multiple files directly alongside your \`${PREFIX}ask\` prompt block seamlessly.` },
+        { name: "🎯 Option 2: Global Slash Commands", value: "• `/ask prompt: [text] file: [optional] message_id: [optional]`\n• `/reset` — Clears conversation context history memory.\n• `/help` — Generates this structural view interface menu documentation frame manual." }
       )
-      .setFooter({ text: "Developed by M • Production Stable Build 2026", iconURL: client.user.displayAvatarURL() })
-      .setTimestamp();
-
-    return interaction.reply({ embeds: [helpEmbed], ephemeral: false });
+      .setFooter({ text: "Hybrid Architecture Mode Build 2026" });
+    return interaction.reply({ embeds: [helpEmbed] });
   }
 
-  // --- HANDLER: /RESET COMMAND ---
   if (interaction.commandName === "reset") {
-    if (sessions.has(sessionId)) {
-      sessions.delete(sessionId);
-      return interaction.reply({ content: "🧹 **Your conversation session history has been successfully reset!**", ephemeral: false });
-    } else {
-      return interaction.reply({ content: "Your session history context is already empty.", ephemeral: true });
-    }
+    sessions.delete(getSessionId(interaction.channelId, interaction.user.id));
+    return interaction.reply({ content: "🧹 **Conversation scope cleared successfully!**" });
   }
 
-  // --- HANDLER: /ASK COMMAND ---
   if (interaction.commandName === "ask") {
     const promptText = interaction.options.getString("prompt").trim();
     const uploadedFile = interaction.options.getAttachment("file");
-
-    // --- USER COOLDOWN RATELIMIT ---
-    const lastUsed = cooldowns.get(interaction.user.id);
-    if (lastUsed && (Date.now() - lastUsed < COOLDOWN_TIME)) {
-      const timeLeft = ((COOLDOWN_TIME - (Date.now() - lastUsed)) / 1000).toFixed(1);
-      return interaction.reply({ content: `⏳ **Hold on!** Please wait **${timeLeft} seconds** before sending another query request.`, ephemeral: true });
-    }
-    cooldowns.set(interaction.user.id, Date.now());
-
-    // --- PROMPT INJECTION SAFETY FILTER ---
-    const containsBannedWord = BANNED_WORDS.some(word => promptText.toLowerCase().includes(word));
-    if (containsBannedWord) {
-      return interaction.reply({ content: "❌ **Access Denied! Your prompt was blocked by the security system filter.**", ephemeral: true });
-    }
-
-    // --- FILE ATTACHMENT MAXIMUM SIZE VALIDATION ---
-    if (uploadedFile && uploadedFile.size > MAX_FILE_SIZE) {
-      const sizeInMB = (uploadedFile.size / (1024 * 1024)).toFixed(2);
-      const limitInMB = (MAX_FILE_SIZE / (1024 * 1024)).toFixed(0);
-      return interaction.reply({ content: `❌ **Processing Failed!** The file \`${uploadedFile.name}\` is **${sizeInMB} MB**. The maximum size allowed threshold is **${limitInMB} MB**.`, ephemeral: true });
-    }
-
-    const tempDir = path.join(__dirname, "temp");
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-
-    // --- TYPING SIGNAL GENERATION & RESERVATION (DEFER REPLY) ---
-    await interaction.deferReply();
-    
-    const typingInterval = setInterval(() => {
-      interaction.channel.sendTyping().catch(() => {});
-    }, 7000); 
-
-    try {
-      let userSession = sessions.get(sessionId);
-      if (!userSession || (Date.now() - userSession.lastUpdated > ONE_DAY_MS)) {
-        userSession = { 
-          messages: [{ 
-              role: "system", 
-              content: "You are a smart Discord assistant made by M. Always answer clearly. CRITICAL INSTRUCTION: You MUST auto-detect the language used in the user's prompt and respond in that EXACT SAME language. If the user writes in English, reply in English. If the user writes in Indonesian, reply in Indonesian. Mirror their language completely." 
-          }], 
-          lastUpdated: Date.now(),
-          hasImageInHistory: false 
-        };
-        sessions.set(sessionId, userSession);
-      }
-      userSession.lastUpdated = Date.now();
-
-      let extractedData = "";
-      let images = new Collection();
-      let pdfs = new Collection();
-      let media = new Collection();
-
-      if (uploadedFile) {
-        await interaction.editReply("📂 *Processing and parsing attached file data extensions...*").catch(() => {});
-        const fileId = uploadedFile.id;
-        if (uploadedFile.contentType === "application/pdf") pdfs.set(fileId, uploadedFile);
-        else if (uploadedFile.contentType?.startsWith("video/") || uploadedFile.contentType?.startsWith("audio/")) media.set(fileId, uploadedFile);
-        else if (uploadedFile.contentType?.startsWith("image/")) images.set(fileId, uploadedFile);
-      }
-
-      const pdfPromises = pdfs.map(async (att) => {
-          const res = await axios.get(att.url, { responseType: 'arraybuffer' });
-          const data = await pdf(Buffer.from(res.data));
-          return `\n[PDF: ${att.name}]\n${data.text.substring(0, 5000)}...\n`;
-      });
-
-      const mediaPromises = media.map(async (att) => {
-          const isAudio = att.contentType.startsWith("audio/");
-          const transcript = await transcribeMedia(att.url, tempDir, isAudio);
-          return `\n[MEDIA TRANSCRIPT (${isAudio ? 'Audio' : 'Video'})]: ${transcript}\n`;
-      });
-
-      const results = await Promise.all([...pdfPromises, ...mediaPromises]);
-      extractedData += results.join("");
-
-      const hasNewImage = images.size > 0;
-      const finalPrompt = `${extractedData}\nUSER: ${promptText}`.trim();
-      let currentPayload;
-
-      if (hasNewImage) {
-        userSession.hasImageInHistory = true;
-        currentPayload = [{ type: "text", text: finalPrompt }];
-        images.forEach(a => currentPayload.push({ type: "image_url", image_url: { url: a.url } }));
-      } else {
-        currentPayload = finalPrompt;
-      }
-
-      const isVisionContext = hasNewImage || userSession.hasImageInHistory;
-      const requestMessages = [...userSession.messages, { role: "user", content: currentPayload }];
-      
-      await interaction.editReply("🧠 *The AI is formulating your response solution...*").catch(() => {});
-
-      const { text: responseText } = await fetchWithFallback(requestMessages, isVisionContext);
-
-      clearInterval(typingInterval);
-
-      userSession.messages.push({ role: "user", content: currentPayload }); 
-      userSession.messages.push({ role: "assistant", content: responseText });
-
-      if (userSession.messages.length > MAX_HISTORY * 2 + 1) { 
-          userSession.messages = [userSession.messages[0], ...userSession.messages.slice(-(MAX_HISTORY * 2))];
-      }
-
-      // --- REMOVED FOOTER INFO HERE ---
-      const finalResponseWithFooter = `> **Prompt:** ${promptText}\n\n${responseText}`;
-      const chunks = splitMessage(finalResponseWithFooter);
-
-      // Emulate stream output payload directly via editing the deferred token placeholder
-      await interaction.editReply(chunks[0]).catch(() => {});
-
-      // Dispatch secondary segmented text frames safely under rate limits
-      if (chunks.length > 1) {
-        for (let i = 1; i < chunks.length; i++) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); 
-          await interaction.followUp(chunks[i]);
-        }
-      }
-
-    } catch (error) {
-      console.error(error);
-      clearInterval(typingInterval); 
-      await interaction.editReply("```❌ All upstream API providers are busy or timed out. Please try sending your request again later.```").catch(() => {});
-    }
+    const targetMessageId = interaction.options.getString("message_id");
+    await processAiRequest(interaction, promptText, uploadedFile, targetMessageId);
   }
 });
 
-// --- SESSION SWEEPER CRON LOOP ---
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, session] of sessions.entries()) {
-    if (now - session.lastUpdated > ONE_DAY_MS) sessions.delete(id);
+// --- MODULE EVENT 2: NATIVE TEXT PREFIX COMMAND HANDLER ---
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+
+  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+
+  if (command === "reset") {
+    sessions.delete(getSessionId(message.channelId, message.author.id));
+    return message.reply("🧹 **Conversation scope cleared successfully!**");
   }
-}, 6 * 60 * 60 * 1000);
+
+  if (command === "ask") {
+    const promptText = args.join(" ").trim();
+    if (!promptText) return message.reply(`❌ **Invalid Input!** Format instruction template syntax: \`${PREFIX}ask [your prompt here]\``);
+
+    // Otomatis tangkap file yang diunggah langsung di pesan teks tersebut
+    const uploadedFile = message.attachments.first() || null;
+
+    // Otomatis deteksi jika user menggunakan fitur klik kanan -> Reply Discord ke suatu pesan teks
+    let targetMessageId = null;
+    if (message.reference && message.reference.messageId) {
+      targetMessageId = message.reference.messageId;
+    }
+
+    await processAiRequest(message, promptText, uploadedFile, targetMessageId);
+  }
+});
 
 client.login(BOT_TOKEN);
