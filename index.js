@@ -27,28 +27,38 @@ const COOLDOWN_TIME = 5000;
 const cooldowns = new Map();
 const BANNED_WORDS = ["exploit", "crash", "bypass system", "force shutdown"];
 
+// --- MODEL CONFIGURATIONS ---
 const VISION_MODELS = [
-  { provider: "google-native", name: "gemini-2.5-flash" }, // Diutamakan karena terbaru, cepat, dan murah di 2026
+  { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
+  { provider: "google-native", name: "gemini-2.5-flash" }, 
   { provider: "google-native", name: "gemini-2.0-flash" },
   { provider: "openrouter", name: "google/gemini-2.0-flash-001" },
-  { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
   { provider: "google-native", name: "gemini-2.5-flash-lite" },
   { provider: "google-native", name: "gemini-3-flash-preview" },
   { provider: "google-native", name: "gemini-3.1-flash-lite-preview" },  
   { provider: "google-native", name: "gemini-2.5-pro" },
 ];
 
-const TEXT_MODELS = [    
-  { provider: "google-native", name: "gemini-2.5-flash" }, // Dipasang paling atas untuk menghemat biaya & performa stabil
-  { provider: "openrouter", name: "deepseek/deepseek-r1:free" }, // Model gratis berperforma tinggi alternatif
-  { provider: "google-native", name: "gemini-2.0-flash" },
+const TEXT_MODELS = [
+  // Dialihkan ke Groq di urutan teratas sebagai pertahanan utama saat kuota harian Gemini Studio (limit 20) Anda habis
   { provider: "groq", name: "llama-3.3-70b-versatile" },
-  { provider: "groq", name: "openai/gpt-oss-120b" },
-  { provider: "groq", name: "openai/gpt-oss-20b" },
   { provider: "groq", name: "llama-3.1-8b-instant" },
-  { provider: "openrouter", name: "openai/gpt-oss-120b:free" },
+  
+  // Endpoint OpenRouter Free aktif dan stabil
+  { provider: "openrouter", name: "deepseek/deepseek-r1" }, 
   { provider: "openrouter", name: "meta-llama/llama-3.3-70b-instruct:free" },
   { provider: "openrouter", name: "qwen/qwen-2.5-72b-instruct:free" },
+  
+  // Google Native (Disimpan di tengah ke bawah sebagai backup otomatis saat limit harian Anda sudah reset)
+  { provider: "google-native", name: "gemini-2.5-flash" }, 
+  { provider: "google-native", name: "gemini-2.0-flash" },
+  { provider: "google-native", name: "gemini-2.5-flash-lite" },
+  { provider: "google-native", name: "gemini-3-flash-preview" },
+  { provider: "google-native", name: "gemini-3.1-flash-lite-preview" },  
+  { provider: "google-native", name: "gemini-2.5-pro" },
+  
+  // Sisa Model OpenRouter cadangan tambahan Anda
+  { provider: "openrouter", name: "openai/gpt-oss-120b:free" },
   { provider: "openrouter", name: "openrouter/free" }
 ];
 
@@ -200,27 +210,55 @@ function splitMessage(text, maxLength = 2000) {
 
 async function fetchWithFallback(messagesArray, isVisionContext) {
   const modelList = isVisionContext ? VISION_MODELS : TEXT_MODELS;
+  
+  // --- PERBAIKAN TIMEOUT: Ditingkatkan menjadi 1 menit (60000ms) ---
+  const timeoutMS = 60000; 
+
   for (const model of modelList) {
     try {
       const safeMessages = sanitizeMessagesForModel(messagesArray, isVisionContext);
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("API_TIMEOUT_15S")), 15000));
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Timeout batas waktu (${timeoutMS / 1000}s) terlampaui`)), timeoutMS)
+      );
+      
       let apiCallPromise;
 
       if (model.provider === "openrouter") {
         apiCallPromise = (async () => {
-          const completion = await openrouter.chat.completions.create({ model: model.name, messages: safeMessages }, { timeout: 14000 });
+          const completion = await openrouter.chat.completions.create({ 
+            model: model.name, 
+            messages: safeMessages 
+          }, { timeout: timeoutMS - 2000 }); // Sisakan selisih 2 detik untuk internal HTTP timeout
+          
+          if (!completion.choices || completion.choices.length === 0) throw new Error("Upstream OpenRouter mengembalikan data kosong");
           return { text: completion.choices[0].message.content };
         })();
-      } else if (model.provider === "google-native") {
+      } 
+      else if (model.provider === "groq") {
+        apiCallPromise = (async () => {
+          const completion = await groq.chat.completions.create({
+            model: model.name,
+            messages: safeMessages
+          }, { timeout: timeoutMS - 2000 });
+          
+          if (!completion.choices || completion.choices.length === 0) throw new Error("Upstream Groq mengembalikan data kosong");
+          return { text: completion.choices[0].message.content };
+        })();
+      }
+      else if (model.provider === "google-native") {
         apiCallPromise = (async () => {
           const systemPrompt = safeMessages.find(msg => msg.role === "system")?.content || "";
           const genModel = genAI.getGenerativeModel({ model: model.name, systemInstruction: systemPrompt });
-          const formattedHistory = safeMessages.slice(1, -1).map(msg => {
+          
+          const historySlice = safeMessages.slice(1, -1);
+          const formattedHistory = historySlice.map(msg => {
               let textContent = typeof msg.content === "string" ? msg.content : msg.content.filter(c => c.type === "text").map(c => c.text).join("\n");
               return { role: msg.role === "assistant" ? "model" : "user", parts: [{ text: textContent }] };
           });
+          
           const chat = genModel.startChat({ history: formattedHistory.length > 0 ? formattedHistory : undefined });
           const lastMsg = safeMessages[safeMessages.length - 1];
+          
           if (Array.isArray(lastMsg.content)) {
             const textPart = lastMsg.content.find(c => c.type === "text")?.text || "";
             const imageParts = await Promise.all(lastMsg.content.filter(c => c.type === "image_url").map(async (img) => {
@@ -235,10 +273,23 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
           }
         })();
       }
-      return await Promise.race([apiCallPromise, timeoutPromise]);
-    } catch (e) { continue; }
+
+      const result = await Promise.race([apiCallPromise, timeoutPromise]);
+      
+      if (result && result.text) {
+        return result;
+      }
+      throw new Error("Struktur kembalian API rusak / objek teks tidak ditemukan");
+
+    } catch (e) { 
+      console.warn(`[⚠️ MODEL FALLBACK] Model ${model.name} (${model.provider}) gagal. Error: ${e.message}`);
+      // Lompati kegagalan model saat ini, lanjut mencoba model alternatif di bawahnya
+      continue; 
+    }
   }
-  throw new Error("All models failed.");
+
+  // JIKA BERADA DI TITIK INI: Berarti seluruh klaster model di dalam array gagal dieksekusi
+  throw new Error("Seluruh klaster model AI pada backend pipeline gagal merespons atau kuota API Anda habis.");
 }
 
 // --- CORE LOGIC HANDLER FOR BOTH INTERACTION AND PREFIX MESSAGE ---
@@ -330,13 +381,24 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
     if (isImage) userSession.hasImageInHistory = true;
     const isVisionContext = isImage || userSession.hasImageInHistory;
 
-    const requestMessages = [...userSession.messages, { role: "user", content: currentPayload }];
+    // Tambahkan payload user saat ini ke dalam array pesan riwayat SEBELUM fetch dilakukan
+    userSession.messages.push({ role: "user", content: currentPayload });
+
     await updateStatusText("🧠 *Formulating solution payload...*");
 
-    const { text: responseText } = await fetchWithFallback(requestMessages, isVisionContext);
+    // Kirim full history yang valid ke fallback handler
+    const { text: responseText } = await fetchWithFallback(userSession.messages, isVisionContext);
 
-    userSession.messages.push({ role: "user", content: currentPayload }); 
+    // Dorong balasan asisten ke riwayat sesi jika sukses
     userSession.messages.push({ role: "assistant", content: responseText });
+    
+    // Batasi maksimum history agar tidak melebihi alokasi memori/token kustom
+    if (userSession.messages.length > MAX_HISTORY * 2) {
+        userSession.messages = [
+            userSession.messages[0], // Tetap pertahankan system prompt
+            ...userSession.messages.slice(-MAX_HISTORY * 2)
+        ];
+    }
     sessions.set(sessionId, userSession);
 
     const finalResponse = `> **Prompt:** ${promptText}\n\n${responseText}`;
@@ -358,6 +420,8 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
     }
 
   } catch (error) {
+    console.error("[❌ UPSTREAM PIPELINE CRITICAL ERROR]:", error);
+
     const errorAlert = "`❌ An error occurred while computing your upstream backend pipeline.`";
     if (isInteraction) await context.editReply(errorAlert).catch(() => {});
     else if (progressStateMessage) await progressStateMessage.edit(errorAlert).catch(() => {});
@@ -396,41 +460,31 @@ client.on("interactionCreate", async (interaction) => {
 
 // --- MODULE EVENT 2: NATIVE TEXT PREFIX COMMAND HANDLER ---
 client.on("messageCreate", async (message) => {
-  // 1. Validasi keamanan dasar (Abaikan bot dan pesan kosong)
   if (message.author.bot || !message.content) return;
-
-  // 2. Cek kesesuaian prefix
   if (!message.content.startsWith(PREFIX)) return;
 
-  // 3. Mengurai argumen dengan memisahkan spasi ganda ekstra secara dinamis
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // --- REGISTRASI PERINTAH PREFIX: RESET ---
   if (command === "reset") {
     sessions.delete(getSessionId(message.channelId, message.author.id));
     return message.reply("🧹 **Conversation scope cleared successfully!**").catch(() => {});
   }
 
-  // --- REGISTRASI PERINTAH PREFIX: ASK ---
   if (command === "ask") {
     const promptText = args.join(" ").trim();
     
-    // Jika hanya mengetik "?ask " tanpa teks pertanyaan tambahan
     if (!promptText) {
       return message.reply(`❌ **Invalid Input!** Format instruction template syntax: \`${PREFIX}ask [your prompt here]\``).catch(() => {});
     }
 
-    // Mengambil attachment jika ada file yang diunggah langsung bersamaan dengan text prefix
     const uploadedFile = message.attachments.first() || null;
 
-    // Otomatisasi deteksi jika user me-reply pesan orang lain menggunakan fitur native Discord Reply
     let targetMessageId = null;
     if (message.reference && message.reference.messageId) {
       targetMessageId = message.reference.messageId;
     }
 
-    // Jalankan pipeline logika inti AI
     await processAiRequest(message, promptText, uploadedFile, targetMessageId);
   }
 });
