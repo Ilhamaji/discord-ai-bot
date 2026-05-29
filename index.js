@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Collection, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, Collection, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } = require("discord.js");
 require("dotenv").config();
 const { OpenAI } = require("openai");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -99,6 +99,17 @@ const commands = [
 
 client.on('ready', async () => {
     console.log(`[🚀] Bot is ready as ${client.user.tag}`);
+    
+    // --- SET PERMANENT STATUS ---
+    client.user.setPresence({
+        activities: [{ 
+            name: "customstatus", 
+            type: ActivityType.Custom, 
+            state: `💬 ${PREFIX}ask or /ask` 
+        }],
+        status: "online",
+    });
+
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
         console.log('[🔄] Updating Slash Commands (/) registration to Discord...');
