@@ -286,7 +286,7 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
 
   try {
     let userSession = sessions.get(sessionId) || { 
-      messages: [{ role: "system", content: "You are a smart Discord assistant. Auto-detect and mirror user language." }], 
+      messages: [{ role: "system", content: "You are a smart Discord assistant. Auto-detect and mirror user language. ?ask is your prefix" }], 
       lastUpdated: Date.now(), hasImageInHistory: false 
     };
     userSession.lastUpdated = Date.now();
