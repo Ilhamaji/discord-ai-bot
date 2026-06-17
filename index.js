@@ -40,24 +40,17 @@ const VISION_MODELS = [
 ];
 
 const TEXT_MODELS = [
-  // Dialihkan ke Groq di urutan teratas sebagai pertahanan utama saat kuota harian Gemini Studio (limit 20) Anda habis
   { provider: "groq", name: "llama-3.3-70b-versatile" },
   { provider: "groq", name: "llama-3.1-8b-instant" },
-  
-  // Endpoint OpenRouter Free aktif dan stabil
   { provider: "openrouter", name: "deepseek/deepseek-r1" }, 
   { provider: "openrouter", name: "meta-llama/llama-3.3-70b-instruct:free" },
   { provider: "openrouter", name: "qwen/qwen-2.5-72b-instruct:free" },
-  
-  // Google Native (Disimpan di tengah ke bawah sebagai backup otomatis saat limit harian Anda sudah reset)
   { provider: "google-native", name: "gemini-2.5-flash" }, 
   { provider: "google-native", name: "gemini-2.0-flash" },
   { provider: "google-native", name: "gemini-2.5-flash-lite" },
   { provider: "google-native", name: "gemini-3-flash-preview" },
   { provider: "google-native", name: "gemini-3.1-flash-lite-preview" },  
   { provider: "google-native", name: "gemini-2.5-pro" },
-  
-  // Sisa Model OpenRouter cadangan tambahan Anda
   { provider: "openrouter", name: "openai/gpt-oss-120b:free" },
   { provider: "openrouter", name: "openrouter/free" }
 ];
@@ -75,7 +68,7 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent // Diperlukan untuk membaca teks prefix (Wajib aktif di Developer Portal!)
+        GatewayIntentBits.MessageContent 
     ]
 });
 
@@ -107,10 +100,10 @@ const commands = [
         .setDescription("Show the complete guide and user manual for this bot")
 ].map(command => command.toJSON());
 
-client.on('ready', async () => {
-    console.log(`[🚀] Bot is ready as ${client.user.tag}`);
+// --- PERBAIKAN UTAMA: FUNGSI STATUS PERMANEN ---
+function setBotPresence(client) {
+    if (!client.user) return;
     
-    // --- SET PERMANENT STATUS ---
     client.user.setPresence({
         activities: [{ 
             name: "customstatus", 
@@ -119,6 +112,19 @@ client.on('ready', async () => {
         }],
         status: "online",
     });
+    console.log('[🔄 Status] Bot presence updated successfully.');
+}
+
+client.on('ready', async () => {
+    console.log(`[🚀] Bot is ready as ${client.user.tag}`);
+    
+    // Jalankan status pertama kali saat bot menyala
+    setBotPresence(client);
+
+    // Jalankan interval setiap 10 menit (600000 ms) agar presence tidak hilang atau tereset oleh gateway Discord
+    setInterval(() => {
+        setBotPresence(client);
+    }, 10 * 60 * 1000);
 
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
@@ -128,6 +134,11 @@ client.on('ready', async () => {
     } catch (error) {
         console.error('[❌] Failed to register Slash Commands:', error);
     }
+});
+
+// Penanganan opsional jika bot terkena disconnect/reconnect paksa
+client.on('shardReady', () => {
+    setBotPresence(client);
 });
 
 const sessions = new Map();
@@ -210,8 +221,6 @@ function splitMessage(text, maxLength = 2000) {
 
 async function fetchWithFallback(messagesArray, isVisionContext) {
   const modelList = isVisionContext ? VISION_MODELS : TEXT_MODELS;
-  
-  // --- PERBAIKAN TIMEOUT: Ditingkatkan menjadi 1 menit (60000ms) ---
   const timeoutMS = 60000; 
 
   for (const model of modelList) {
@@ -228,7 +237,7 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
           const completion = await openrouter.chat.completions.create({ 
             model: model.name, 
             messages: safeMessages 
-          }, { timeout: timeoutMS - 2000 }); // Sisakan selisih 2 detik untuk internal HTTP timeout
+          }, { timeout: timeoutMS - 2000 });
           
           if (!completion.choices || completion.choices.length === 0) throw new Error("Upstream OpenRouter mengembalikan data kosong");
           return { text: completion.choices[0].message.content };
@@ -283,23 +292,19 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
 
     } catch (e) { 
       console.warn(`[⚠️ MODEL FALLBACK] Model ${model.name} (${model.provider}) gagal. Error: ${e.message}`);
-      // Lompati kegagalan model saat ini, lanjut mencoba model alternatif di bawahnya
       continue; 
     }
   }
 
-  // JIKA BERADA DI TITIK INI: Berarti seluruh klaster model di dalam array gagal dieksekusi
   throw new Error("Seluruh klaster model AI pada backend pipeline gagal merespons atau kuota API Anda habis.");
 }
 
-// --- CORE LOGIC HANDLER FOR BOTH INTERACTION AND PREFIX MESSAGE ---
 async function processAiRequest(context, promptText, fileAttachment, targetMessageId) {
   const isInteraction = !!context.commandName;
   const userId = isInteraction ? context.user.id : context.author.id;
   const channelId = context.channelId;
   const sessionId = getSessionId(channelId, userId);
 
-  // Cooldown Validation
   const lastUsed = cooldowns.get(userId);
   if (lastUsed && (Date.now() - lastUsed < COOLDOWN_TIME)) {
     const msg = "⏳ Cooldown active. Please wait.";
@@ -307,19 +312,16 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
   }
   cooldowns.set(userId, Date.now());
 
-  // Safety Banned Words Validation
   if (BANNED_WORDS.some(word => promptText.toLowerCase().includes(word))) {
     const msg = "❌ Request denied by system filter safety guidelines.";
     return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
   }
 
-  // File size check
   if (fileAttachment && fileAttachment.size > MAX_FILE_SIZE) {
     const msg = "❌ Attached payload exceeds maximum 10MB limit threshold.";
     return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
   }
 
-  // Visual Deferred Feedback
   let progressStateMessage;
   if (isInteraction) {
     await context.deferReply();
@@ -344,7 +346,6 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
 
     let extractedData = "";
 
-    // 1. Fetch Target Message Context (If target ID provided or native Discord reply used)
     if (targetMessageId) {
       await updateStatusText("🔍 *Fetching target reference context...*");
       const targetMsg = await context.channel.messages.fetch(targetMessageId).catch(() => null);
@@ -353,7 +354,6 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
       }
     }
 
-    // 2. Parse file extraction
     let isImage = false;
     if (fileAttachment) {
       await updateStatusText("📂 *Processing attachment extensions...*");
@@ -381,21 +381,17 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
     if (isImage) userSession.hasImageInHistory = true;
     const isVisionContext = isImage || userSession.hasImageInHistory;
 
-    // Tambahkan payload user saat ini ke dalam array pesan riwayat SEBELUM fetch dilakukan
     userSession.messages.push({ role: "user", content: currentPayload });
 
     await updateStatusText("🧠 *Formulating solution payload...*");
 
-    // Kirim full history yang valid ke fallback handler
     const { text: responseText } = await fetchWithFallback(userSession.messages, isVisionContext);
 
-    // Dorong balasan asisten ke riwayat sesi jika sukses
     userSession.messages.push({ role: "assistant", content: responseText });
     
-    // Batasi maksimum history agar tidak melebihi alokasi memori/token kustom
     if (userSession.messages.length > MAX_HISTORY * 2) {
         userSession.messages = [
-            userSession.messages[0], // Tetap pertahankan system prompt
+            userSession.messages[0], 
             ...userSession.messages.slice(-MAX_HISTORY * 2)
         ];
     }
@@ -404,7 +400,6 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
     const finalResponse = `> **Prompt:** ${promptText}\n\n${responseText}`;
     const chunks = splitMessage(finalResponse);
 
-    // Final Dispatch outputs
     if (isInteraction) {
       await context.editReply(chunks[0]).catch(() => {});
       for (let i = 1; i < chunks.length; i++) {
@@ -421,7 +416,6 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
 
   } catch (error) {
     console.error("[❌ UPSTREAM PIPELINE CRITICAL ERROR]:", error);
-
     const errorAlert = "`❌ An error occurred while computing your upstream backend pipeline.`";
     if (isInteraction) await context.editReply(errorAlert).catch(() => {});
     else if (progressStateMessage) await progressStateMessage.edit(errorAlert).catch(() => {});
