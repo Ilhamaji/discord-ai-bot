@@ -19,40 +19,40 @@ REQUIRED_ENVS.forEach((envName) => {
   }
 });
 
-const PREFIX = "?"; // Konfigurasi Prefix Teks Manual
+const PREFIX = "?"; 
 const MAX_HISTORY = 10; 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; 
 const COOLDOWN_TIME = 5000; 
 const cooldowns = new Map();
 const BANNED_WORDS = ["exploit", "crash", "bypass system", "force shutdown"];
 
-// --- MODEL CONFIGURATIONS ---
+// --- MODEL CONFIGURATIONS (UPDATED & STABLE) ---
 const VISION_MODELS = [
-  { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
-  { provider: "google-native", name: "gemini-2.5-flash" }, 
+  // 1. Google Native (Prioritas Utama untuk Vision: Cepat & Akurat)
+  { provider: "google-native", name: "gemini-2.5-flash" },
   { provider: "google-native", name: "gemini-2.0-flash" },
-  { provider: "openrouter", name: "google/gemini-2.0-flash-001" },
-  { provider: "google-native", name: "gemini-2.5-flash-lite" },
-  { provider: "google-native", name: "gemini-3-flash-preview" },
-  { provider: "google-native", name: "gemini-3.1-flash-lite-preview" },  
   { provider: "google-native", name: "gemini-2.5-pro" },
+  // 2. OpenRouter (Fallback Vision Gratis)
+  { provider: "openrouter", name: "google/gemini-2.0-flash-001" },
+  { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
+  { provider: "openrouter", name: "meta-llama/llama-3.2-11b-vision-instruct:free" },
+  { provider: "openrouter", name: "qwen/qwen-2.5-vl-72b-instruct:free" }
 ];
 
 const TEXT_MODELS = [
+  // 1. Groq (Kecepatan inferensi tinggi)
   { provider: "groq", name: "llama-3.3-70b-versatile" },
   { provider: "groq", name: "llama-3.1-8b-instant" },
-  { provider: "openrouter", name: "deepseek/deepseek-r1" }, 
+  // 2. Google Native (Konteks besar & penalaran dalam)
+  { provider: "google-native", name: "gemini-2.5-flash" },
+  { provider: "google-native", name: "gemini-2.0-flash" },
+  { provider: "google-native", name: "gemini-2.5-pro" },
+  // 3. OpenRouter (Fallback teks gratis)
+  { provider: "openrouter", name: "deepseek/deepseek-r1" },
+  { provider: "openrouter", name: "deepseek/deepseek-chat" },
   { provider: "openrouter", name: "meta-llama/llama-3.3-70b-instruct:free" },
   { provider: "openrouter", name: "qwen/qwen-2.5-72b-instruct:free" },
-  { provider: "google-native", name: "gemini-2.5-flash" }, 
-  { provider: "google-native", name: "gemini-2.0-flash" },
-  { provider: "google-native", name: "gemini-2.5-flash-lite" },
-  { provider: "google-native", name: "gemini-3-flash-preview" },
-  { provider: "google-native", name: "gemini-3.1-flash-lite-preview" },  
-  { provider: "google-native", name: "gemini-2.5-pro" },
-  { provider: "openrouter", name: "openai/gpt-oss-120b:free" },
-  { provider: "openrouter", name: "openrouter/free" }
+  { provider: "openrouter", name: "mistralai/mistral-small-24b-instruct-2501:free" }
 ];
 
 const OR_API_KEY = process.env.API_KEY;
@@ -100,50 +100,31 @@ const commands = [
         .setDescription("Show the complete guide and user manual for this bot")
 ].map(command => command.toJSON());
 
-// --- PERBAIKAN UTAMA: FUNGSI STATUS PERMANEN ---
 function setBotPresence(client) {
     if (!client.user) return;
-    
     client.user.setPresence({
-        activities: [{ 
-            name: "customstatus", 
-            type: ActivityType.Custom, 
-            state: `${PREFIX}ask or /help` 
-        }],
+        activities: [{ name: "customstatus", type: ActivityType.Custom, state: `${PREFIX}ask or /help` }],
         status: "online",
     });
-    console.log('[🔄 Status] Bot presence updated successfully.');
 }
 
 client.on('ready', async () => {
-    console.log(`[🚀] Bot is ready as ${client.user.tag}`);
-    
-    // Jalankan status pertama kali saat bot menyala
+    console.log(`\n[🚀] Bot is ready as ${client.user.tag}`);
     setBotPresence(client);
-
-    // Jalankan interval setiap 10 menit (600000 ms) agar presence tidak hilang atau tereset oleh gateway Discord
-    setInterval(() => {
-        setBotPresence(client);
-    }, 10 * 60 * 1000);
+    setInterval(() => setBotPresence(client), 10 * 60 * 1000);
 
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
         console.log('[🔄] Updating Slash Commands (/) registration to Discord...');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('[✅] Successfully registered Slash Commands globally!');
+        console.log('[✅] Successfully registered Slash Commands globally!\n');
     } catch (error) {
         console.error('[❌] Failed to register Slash Commands:', error);
     }
 });
 
-// Penanganan opsional jika bot terkena disconnect/reconnect paksa
-client.on('shardReady', () => {
-    setBotPresence(client);
-});
-
 const sessions = new Map();
 
-// --- HELPERS ---
 function getSessionId(channelId, userId) {
   return `${channelId}-${userId}`;
 }
@@ -159,6 +140,7 @@ function sanitizeMessagesForModel(messages, isVisionModel) {
   });
 }
 
+// Transkripsi audio dialihkan ke Groq (Whisper-large-v3)
 async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
   const uniqueId = crypto.randomUUID();
   const inputPath = path.join(tempDir, `in_${uniqueId}.${isAudioOnly ? 'mp3' : 'mp4'}`);
@@ -174,9 +156,10 @@ async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
     const fileToUpload = isAudioOnly ? inputPath : audioPath;
     const form = new FormData();
     form.append("file", fs.createReadStream(fileToUpload));
-    form.append("model", "openai/whisper-large-v3");
-    const whisperRes = await axios.post("https://openrouter.ai/api/v1/audio/transcriptions", form, {
-      headers: { ...form.getHeaders(), "Authorization": `Bearer ${OR_API_KEY}` },
+    form.append("model", "whisper-large-v3");
+    
+    const whisperRes = await axios.post("https://api.groq.com/openai/v1/audio/transcriptions", form, {
+      headers: { ...form.getHeaders(), "Authorization": `Bearer ${GROQ_API_KEY}` },
       timeout: 60000 
     });
     return whisperRes.data.text || "(No audible speech detected)";
@@ -188,35 +171,33 @@ async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
   }
 }
 
-function splitMessage(text, maxLength = 2000) {
-  const chunks = [];
-  let currentChunk = "";
-  let isInsideCodeBlock = false;
-  let codeLanguage = ""; 
-  const lines = text.split("\n");
+// Pemotongan string yang solid untuk standar 2000 karakter Discord
+function splitMessage(text, maxLength = 1950) {
+    if (!text) return ["_No content generated_"];
+    const chunks = [];
+    const lines = text.split('\n');
+    let current = "";
 
-  for (const line of lines) {
-    if (line.trim().startsWith("```")) {
-      isInsideCodeBlock = !isInsideCodeBlock;
-      if (isInsideCodeBlock) codeLanguage = line.trim().substring(3).trim();
-      else codeLanguage = "";
+    for (const line of lines) {
+        if (current.length + line.length + 1 <= maxLength) {
+            current += (current === "" ? "" : "\n") + line;
+        } else {
+            if (current !== "") chunks.push(current);
+            // Paksa pemotongan untuk baris kode/teks tanpa enter yang sangat panjang
+            if (line.length > maxLength) {
+                let subLine = line;
+                while (subLine.length > 0) {
+                    chunks.push(subLine.substring(0, maxLength));
+                    subLine = subLine.substring(maxLength);
+                }
+                current = "";
+            } else {
+                current = line;
+            }
+        }
     }
-
-    if (currentChunk.length + line.length + 1 > maxLength) {
-      if (isInsideCodeBlock) {
-        currentChunk += "\n```";
-        chunks.push(currentChunk.trim());
-        currentChunk = "```" + codeLanguage + "\n" + line + "\n";
-      } else {
-        chunks.push(currentChunk.trim());
-        currentChunk = line + "\n";
-      }
-    } else {
-      currentChunk += line + "\n";
-    }
-  }
-  if (currentChunk.trim().length > 0) chunks.push(currentChunk.trim());
-  return chunks;
+    if (current !== "") chunks.push(current);
+    return chunks.length > 0 ? chunks : ["_Empty_"];
 }
 
 async function fetchWithFallback(messagesArray, isVisionContext) {
@@ -224,33 +205,32 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
   const timeoutMS = 60000; 
 
   for (const model of modelList) {
+    let timeoutId;
     try {
+      console.log(`[🔄 MODEL] Mencoba menghubungkan ke: ${model.name} (${model.provider})`);
       const safeMessages = sanitizeMessagesForModel(messagesArray, isVisionContext);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Timeout batas waktu (${timeoutMS / 1000}s) terlampaui`)), timeoutMS)
-      );
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`Timeout ${timeoutMS / 1000}s terlampaui`)), timeoutMS);
+      });
       
       let apiCallPromise;
 
       if (model.provider === "openrouter") {
         apiCallPromise = (async () => {
           const completion = await openrouter.chat.completions.create({ 
-            model: model.name, 
-            messages: safeMessages 
-          }, { timeout: timeoutMS - 2000 });
-          
-          if (!completion.choices || completion.choices.length === 0) throw new Error("Upstream OpenRouter mengembalikan data kosong");
+            model: model.name, messages: safeMessages 
+          });
+          if (!completion.choices?.length) throw new Error("Data kosong dari hulu");
           return { text: completion.choices[0].message.content };
         })();
       } 
       else if (model.provider === "groq") {
         apiCallPromise = (async () => {
           const completion = await groq.chat.completions.create({
-            model: model.name,
-            messages: safeMessages
-          }, { timeout: timeoutMS - 2000 });
-          
-          if (!completion.choices || completion.choices.length === 0) throw new Error("Upstream Groq mengembalikan data kosong");
+            model: model.name, messages: safeMessages
+          });
+          if (!completion.choices?.length) throw new Error("Data kosong dari hulu");
           return { text: completion.choices[0].message.content };
         })();
       }
@@ -284,33 +264,36 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
       }
 
       const result = await Promise.race([apiCallPromise, timeoutPromise]);
+      clearTimeout(timeoutId); // Cegah memory leak
       
       if (result && result.text) {
+        console.log(`[✅ MODEL] Sukses menerima data dari ${model.name}`);
         return result;
       }
-      throw new Error("Struktur kembalian API rusak / objek teks tidak ditemukan");
+      throw new Error("Objek teks tidak ditemukan");
 
     } catch (e) { 
-      console.warn(`[⚠️ MODEL FALLBACK] Model ${model.name} (${model.provider}) gagal. Error: ${e.message}`);
+      if (timeoutId) clearTimeout(timeoutId);
+      console.warn(`[⚠️ FALLBACK] Model ${model.name} gagal. Error: ${e.message}`);
       continue; 
     }
   }
 
-  throw new Error("Seluruh klaster model AI pada backend pipeline gagal merespons atau kuota API Anda habis.");
+  throw new Error("Semua model AI gagal merespons atau kuota API habis.");
 }
 
 async function processAiRequest(context, promptText, fileAttachment, targetMessageId) {
   const isInteraction = !!context.commandName;
-  const userId = isInteraction ? context.user.id : context.author.id;
-  const channelId = context.channelId;
-  const sessionId = getSessionId(channelId, userId);
+  const user = isInteraction ? context.user : context.author;
+  const sessionId = getSessionId(context.channelId, user.id);
 
-  const lastUsed = cooldowns.get(userId);
+  console.log(`\n[📥 PROMPT] Masuk dari: ${user.tag} | Isi: "${promptText.substring(0,50)}..."`);
+
+  const lastUsed = cooldowns.get(user.id);
   if (lastUsed && (Date.now() - lastUsed < COOLDOWN_TIME)) {
-    const msg = "⏳ Cooldown active. Please wait.";
-    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+    return isInteraction ? context.reply({ content: "⏳ Cooldown.", ephemeral: true }) : context.reply("⏳ Cooldown.");
   }
-  cooldowns.set(userId, Date.now());
+  cooldowns.set(user.id, Date.now());
 
   if (BANNED_WORDS.some(word => promptText.toLowerCase().includes(word))) {
     const msg = "❌ Request denied by system filter safety guidelines.";
@@ -324,39 +307,33 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
 
   let progressStateMessage;
   if (isInteraction) {
-    await context.deferReply();
+    await context.deferReply(); 
   } else {
-    progressStateMessage = await context.reply("🧠 *Thinking and parsing instructions...*").catch(() => null);
+    progressStateMessage = await context.reply("🧠 *Thinking...*").catch(() => null);
   }
-
-  const updateStatusText = async (text) => {
-    if (isInteraction) await context.editReply(text).catch(() => {});
-    else if (progressStateMessage) await progressStateMessage.edit(text).catch(() => {});
-  };
 
   const tempDir = path.join(__dirname, "temp");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
   try {
     let userSession = sessions.get(sessionId) || { 
-      messages: [{ role: "system", content: "You are a smart Discord assistant. Auto-detect and mirror user language. ?ask is your prefix" }], 
-      lastUpdated: Date.now(), hasImageInHistory: false 
+      messages: [{ role: "system", content: "You are a smart Discord assistant. Auto-detect and mirror user language." }], 
+      hasImageInHistory: false 
     };
-    userSession.lastUpdated = Date.now();
 
     let extractedData = "";
+    let isImage = false;
 
     if (targetMessageId) {
-      await updateStatusText("🔍 *Fetching target reference context...*");
+      console.log("[🔍 TARGET] Mengambil konteks pesan yang di-reply...");
       const targetMsg = await context.channel.messages.fetch(targetMessageId).catch(() => null);
       if (targetMsg) {
         extractedData += `\n[REFERENCED TEXT CONTEXT (Author: ${targetMsg.author.username})]: "${targetMsg.content}"\n`;
       }
     }
 
-    let isImage = false;
     if (fileAttachment) {
-      await updateStatusText("📂 *Processing attachment extensions...*");
+      console.log(`[📂 FILE] Memproses lampiran: ${fileAttachment.name}`);
       const filename = fileAttachment.name.toLowerCase();
       const mimeType = fileAttachment.contentType ? fileAttachment.contentType.toLowerCase() : "";
 
@@ -370,7 +347,7 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
         const transcript = await transcribeMedia(fileAttachment.url, tempDir, isAudioOnly);
         extractedData += `\n[MEDIA TRANSCRIPT]: ${transcript}\n`;
       } 
-      else if (filename.endsWith(".jpg") || filename.endsWith(".jpeg") || filename.endsWith(".png") || filename.endsWith(".webp") || mimeType.startsWith("image/")) {
+      else if (mimeType.startsWith("image/") || filename.match(/\.(jpg|jpeg|png|webp)$/i)) {
         isImage = true;
       }
     }
@@ -379,69 +356,70 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
     let currentPayload = isImage ? [{ type: "text", text: finalPrompt }, { type: "image_url", image_url: { url: fileAttachment.url } }] : finalPrompt;
 
     if (isImage) userSession.hasImageInHistory = true;
-    const isVisionContext = isImage || userSession.hasImageInHistory;
-
     userSession.messages.push({ role: "user", content: currentPayload });
 
-    await updateStatusText("🧠 *Formulating solution payload...*");
-
-    const { text: responseText } = await fetchWithFallback(userSession.messages, isVisionContext);
+    // Panggil Pipeline Backend
+    const { text: responseText } = await fetchWithFallback(userSession.messages, userSession.hasImageInHistory);
 
     userSession.messages.push({ role: "assistant", content: responseText });
     
-    if (userSession.messages.length > MAX_HISTORY * 2) {
-        userSession.messages = [
-            userSession.messages[0], 
-            ...userSession.messages.slice(-MAX_HISTORY * 2)
-        ];
+    // Cegah error validasi Google Gemini dengan mempertahankan pola history
+    if (userSession.messages.length > (MAX_HISTORY * 2) + 1) {
+        let slicedHistory = userSession.messages.slice(-(MAX_HISTORY * 2));
+        if (slicedHistory[0].role === "assistant") slicedHistory = slicedHistory.slice(1);
+        userSession.messages = [userSession.messages[0], ...slicedHistory];
     }
     sessions.set(sessionId, userSession);
 
     const finalResponse = `> **Prompt:** ${promptText}\n\n${responseText}`;
     const chunks = splitMessage(finalResponse);
 
+    console.log(`[📤 DISCORD] Mengirim ${chunks.length} blok pesan ke server...`);
     if (isInteraction) {
-      await context.editReply(chunks[0]).catch(() => {});
+      await context.editReply(chunks[0]);
       for (let i = 1; i < chunks.length; i++) {
         await new Promise(r => setTimeout(r, 1000));
         await context.followUp(chunks[i]);
       }
     } else {
-      if (progressStateMessage) await progressStateMessage.edit(chunks[0]).catch(() => {});
+      if (progressStateMessage) await progressStateMessage.edit(chunks[0]);
       for (let i = 1; i < chunks.length; i++) {
         await new Promise(r => setTimeout(r, 1000));
         await context.channel.send(chunks[i]);
       }
     }
+    console.log("[✅ DONE] Pesan sukses terkirim ke Discord.");
 
   } catch (error) {
-    console.error("[❌ UPSTREAM PIPELINE CRITICAL ERROR]:", error);
-    const errorAlert = "`❌ An error occurred while computing your upstream backend pipeline.`";
-    if (isInteraction) await context.editReply(errorAlert).catch(() => {});
-    else if (progressStateMessage) await progressStateMessage.edit(errorAlert).catch(() => {});
+    console.error("\n[❌ CRITICAL ERROR]:", error);
+    const errorAlert = `\`❌ Terjadi kesalahan: ${error.message}\``;
+    try {
+        if (isInteraction) await context.editReply(errorAlert);
+        else if (progressStateMessage) await progressStateMessage.edit(errorAlert);
+    } catch (e) { console.error("[❌ DISCORD UI ERROR] Gagal mengedit pesan peringatan:", e); }
   }
 }
 
-// --- MODULE EVENT 1: SLASH COMMAND INTERACTION HANDLER ---
+// --- EVENT HANDLERS ---
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+  console.log(`\n[⚡ EVENT] Trigger Slash Command: /${interaction.commandName} oleh ${interaction.user.tag}`);
 
   if (interaction.commandName === "help") {
     const helpEmbed = new EmbedBuilder()
       .setColor("#5865F2") 
       .setTitle("🤖 AI Assistant Hybrid Manual Guide")
-      .setDescription("This system adapts to both Slash Commands (`/`) and Native Prefix Triggers (`?`). Choose whichever fits your workflow efficiency targets best!")
+      .setDescription("Sistem ini mendukung Slash Commands (`/`) dan Prefix Triggers (`?`).")
       .addFields(
-        { name: "⚡ Option 1: Native Prefix Commands (Recommended for Files & Replies)", value: `• \`${PREFIX}ask [Your question]\` — Prompts the AI model.\n• \`${PREFIX}reset\` — Clears conversation session context memory.\n\n*Advantages:* You can use Discord's native **Reply** feature targeting any text message or upload multiple files directly alongside your \`${PREFIX}ask\` prompt block seamlessly.` },
-        { name: "🎯 Option 2: Global Slash Commands", value: "• `/ask prompt: [text] file: [optional] message_id: [optional]`\n• `/reset` — Clears conversation context history memory.\n• `/help` — Generates this structural view interface menu documentation frame manual." }
-      )
-      .setFooter({ text: "Hybrid Architecture Mode Build 2026" });
+        { name: "⚡ Prefix Commands (Disarankan untuk membalas pesan & lampiran)", value: `• \`${PREFIX}ask [pertanyaan]\`\n• \`${PREFIX}reset\` — Hapus memori percakapan.` },
+        { name: "🎯 Slash Commands", value: "• `/ask prompt: [teks] file: [opsional] message_id: [opsional]`\n• `/reset`\n• `/help`" }
+      );
     return interaction.reply({ embeds: [helpEmbed] }).catch(() => {});
   }
 
   if (interaction.commandName === "reset") {
     sessions.delete(getSessionId(interaction.channelId, interaction.user.id));
-    return interaction.reply({ content: "🧹 **Conversation scope cleared successfully!**" }).catch(() => {});
+    return interaction.reply({ content: "🧹 **Sesi memori dibersihkan!**" }).catch(() => {});
   }
 
   if (interaction.commandName === "ask") {
@@ -452,33 +430,26 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// --- MODULE EVENT 2: NATIVE TEXT PREFIX COMMAND HANDLER ---
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.content) return;
-  if (!message.content.startsWith(PREFIX)) return;
+  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+  console.log(`\n[💬 EVENT] Trigger Prefix Command dari ${message.author.tag}`);
 
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
   if (command === "reset") {
     sessions.delete(getSessionId(message.channelId, message.author.id));
-    return message.reply("🧹 **Conversation scope cleared successfully!**").catch(() => {});
+    return message.reply("🧹 **Sesi memori dibersihkan!**").catch(() => {});
   }
 
   if (command === "ask") {
     const promptText = args.join(" ").trim();
-    
-    if (!promptText) {
-      return message.reply(`❌ **Invalid Input!** Format instruction template syntax: \`${PREFIX}ask [your prompt here]\``).catch(() => {});
-    }
-
+    if (!promptText) return message.reply(`❌ Format tidak valid: \`${PREFIX}ask [pertanyaan]\``).catch(() => {});
     const uploadedFile = message.attachments.first() || null;
-
     let targetMessageId = null;
     if (message.reference && message.reference.messageId) {
       targetMessageId = message.reference.messageId;
     }
-
     await processAiRequest(message, promptText, uploadedFile, targetMessageId);
   }
 });
