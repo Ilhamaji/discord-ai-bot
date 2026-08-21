@@ -28,31 +28,31 @@ const BANNED_WORDS = ["exploit", "crash", "bypass system", "force shutdown"];
 
 // --- MODEL CONFIGURATIONS (UPDATED & STABLE) ---
 const VISION_MODELS = [
-  // 1. Google Native (Prioritas Utama untuk Vision: Cepat & Akurat)
-  { provider: "google-native", name: "gemini-2.5-flash" },
-  { provider: "google-native", name: "gemini-2.0-flash" },
-  { provider: "google-native", name: "gemini-2.5-pro" },
-  // 2. OpenRouter (Fallback Vision Gratis)
+  // 1. OpenRouter (Fallback Vision Gratis)
   { provider: "openrouter", name: "google/gemini-2.0-flash-001" },
   { provider: "openrouter", name: "meta-llama/llama-3.2-90b-vision-instruct:free" },
   { provider: "openrouter", name: "meta-llama/llama-3.2-11b-vision-instruct:free" },
-  { provider: "openrouter", name: "qwen/qwen-2.5-vl-72b-instruct:free" }
-];
-
-const TEXT_MODELS = [
-  // 1. Groq (Kecepatan inferensi tinggi)
-  { provider: "groq", name: "llama-3.3-70b-versatile" },
-  { provider: "groq", name: "llama-3.1-8b-instant" },
-  // 2. Google Native (Konteks besar & penalaran dalam)
+  { provider: "openrouter", name: "qwen/qwen-2.5-vl-72b-instruct:free" },
+  // 2. Google Native (Prioritas Utama untuk Vision: Cepat & Akurat)
   { provider: "google-native", name: "gemini-2.5-flash" },
   { provider: "google-native", name: "gemini-2.0-flash" },
   { provider: "google-native", name: "gemini-2.5-pro" },
-  // 3. OpenRouter (Fallback teks gratis)
-  { provider: "openrouter", name: "deepseek/deepseek-r1" },
+];
+
+const TEXT_MODELS = [
+  // 1. Groq (Diperbarui berdasarkan referensi gambar AI Overview)
+  { provider: "groq", name: "openai/gpt-oss-20b" },
+  { provider: "groq", name: "openai/gpt-oss-120b" },
+  { provider: "groq", name: "qwen/qwen3.6-27B" },
+  // 2. OpenRouter (Menghapus deepseek-r1 yang mahal, mempertahankan yang sukses)
   { provider: "openrouter", name: "deepseek/deepseek-chat" },
   { provider: "openrouter", name: "meta-llama/llama-3.3-70b-instruct:free" },
   { provider: "openrouter", name: "qwen/qwen-2.5-72b-instruct:free" },
-  { provider: "openrouter", name: "mistralai/mistral-small-24b-instruct-2501:free" }
+  { provider: "openrouter", name: "mistralai/mistral-small-24b-instruct-2501:free" },
+  // 3. Google Native (Konteks besar & penalaran dalam)
+  { provider: "google-native", name: "gemini-2.5-flash" },
+  { provider: "google-native", name: "gemini-2.0-flash" },
+  { provider: "google-native", name: "gemini-2.5-pro" },
 ];
 
 const OR_API_KEY = process.env.API_KEY;
@@ -140,7 +140,6 @@ function sanitizeMessagesForModel(messages, isVisionModel) {
   });
 }
 
-// Transkripsi audio dialihkan ke Groq (Whisper-large-v3)
 async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
   const uniqueId = crypto.randomUUID();
   const inputPath = path.join(tempDir, `in_${uniqueId}.${isAudioOnly ? 'mp3' : 'mp4'}`);
@@ -171,7 +170,6 @@ async function transcribeMedia(mediaUrl, tempDir, isAudioOnly = false) {
   }
 }
 
-// Pemotongan string yang solid untuk standar 2000 karakter Discord
 function splitMessage(text, maxLength = 1950) {
     if (!text) return ["_No content generated_"];
     const chunks = [];
@@ -183,7 +181,6 @@ function splitMessage(text, maxLength = 1950) {
             current += (current === "" ? "" : "\n") + line;
         } else {
             if (current !== "") chunks.push(current);
-            // Paksa pemotongan untuk baris kode/teks tanpa enter yang sangat panjang
             if (line.length > maxLength) {
                 let subLine = line;
                 while (subLine.length > 0) {
@@ -264,7 +261,7 @@ async function fetchWithFallback(messagesArray, isVisionContext) {
       }
 
       const result = await Promise.race([apiCallPromise, timeoutPromise]);
-      clearTimeout(timeoutId); // Cegah memory leak
+      clearTimeout(timeoutId); 
       
       if (result && result.text) {
         console.log(`[✅ MODEL] Sukses menerima data dari ${model.name}`);
