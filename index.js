@@ -181,6 +181,55 @@ function isAdmin(userId) {
   return ownerId && ownerId === userId;
 }
 
+// --- CAPABILITY / PERMISSION LAYER ---
+// Satu sumber kebenaran untuk "siapa boleh apa". UI (tombol/embed) maupun
+// handler memakai helper yang sama, sehingga fitur yang tidak boleh diakses
+// tidak pernah dirender DAN tidak pernah tereksekusi.
+// Tambah capability baru cukup di sini; UI otomatis mengikuti.
+const CAPABILITIES = {
+  // Selalu tersedia untuk semua user
+  ask_ai: () => true,
+  reset_memory: () => true,
+  switch_model: () => true,
+  view_help: () => true,
+  // Khusus owner
+  admin_panel: (userId) => isAdmin(userId),
+  admin_stats: (userId) => isAdmin(userId),
+  admin_clear_sessions: (userId) => isAdmin(userId),
+  admin_reload_commands: (userId) => isAdmin(userId),
+  admin_view_config: (userId) => isAdmin(userId),
+};
+
+// Cek apakah user punya capability tertentu. Default: DENY (fail-closed).
+function can(userId, capability) {
+  const rule = CAPABILITIES[capability];
+  if (typeof rule !== "function") return false;
+  try {
+    return rule(userId) === true;
+  } catch {
+    return false;
+  }
+}
+
+// Guard untuk handler interaction. Jika tidak berhak, balas pesan umum yang
+// TIDAK membocorkan keberadaan fitur, lalu kembalikan false.
+async function requireCapability(interaction, capability) {
+  if (can(interaction.user.id, capability)) return true;
+  console.warn(
+    `[🔒 DENY] ${interaction.user.tag} (${interaction.user.id}) mencoba akses "${capability}"`
+  );
+  const respond = interaction.replied || interaction.deferred
+    ? () => interaction.editReply({ content: "❌ Fitur ini tidak tersedia untuk Anda.", components: [] })
+    : () => interaction.reply({ content: "❌ Fitur ini tidak tersedia untuk Anda.", ephemeral: true });
+  await respond().catch(() => {});
+  return false;
+}
+
+// Pastikan tombol memang milik user yang mengklik (mencegah "numpang" customId).
+function isButtonOwner(interaction, ownerIdInCustomId) {
+  return ownerIdInCustomId === interaction.user.id;
+}
+
 // Build model selector dropdown
 function buildModelSelectMenu(userId, isVisionContext) {
   const isVision = !!isVisionContext;
@@ -345,6 +394,8 @@ function buildAskModal(userId, channelId) {
 }
 
 // Build help navigation action row
+// Tombol admin HANYA dirender jika user punya capability-nya, sehingga user
+// biasa tidak pernah melihat keberadaan fitur tersebut.
 function buildHelpActionRow(userId) {
   const buttons = [
     new ButtonBuilder()
@@ -363,13 +414,17 @@ function buildHelpActionRow(userId) {
       .setCustomId(`ai_bot:help_examples:${userId}`)
       .setLabel('🎯 Examples')
       .setStyle(ButtonStyle.Success),
-    ...(isAdmin(userId) ? [
+  ];
+
+  if (can(userId, 'admin_panel')) {
+    buttons.push(
       new ButtonBuilder()
         .setCustomId(`ai_bot:help_admin:${userId}`)
         .setLabel('🔧 Admin')
         .setStyle(ButtonStyle.Danger)
-    ] : [])
-  ];
+    );
+  }
+
   return new ActionRowBuilder().addComponents(buttons);
 }
 
@@ -429,17 +484,26 @@ function buildAdminPanelEmbed() {
     .setTimestamp();
 }
 
-// Build help embed with navigation
-function buildHelpEmbed() {
+// Build help embed with navigation.
+// userId dipakai agar isi manual menyesuaikan hak akses: perintah admin
+// tidak dicantumkan sama sekali bagi user yang tidak berhak.
+function buildHelpEmbed(userId) {
+  const fields = [
+    { name: '🤖 Ask AI', value: 'Klik tombol **🤖 Ask AI** di atas (atau jalankan `/ask` tanpa mengisi prompt) untuk membuka form pertanyaan.', inline: false },
+    { name: '⚡ Prefix Commands (`?`)', value: `• \`${PREFIX}<pertanyaan>\` — langsung tanya AI, mis. \`${PREFIX}hi\`\n• \`${PREFIX}ask [pertanyaan]\` — sama, bentuk eksplisit\n• \`${PREFIX}reset\` — Hapus memori percakapan.\n• \`${PREFIX}help\` — Tampilkan bantuan ini.`, inline: false },
+    { name: '🎯 Slash Commands', value: '• `/ask prompt: [teks] file: [opsional] message_id: [opsional]`\n• `/reset`\n• `/help`', inline: false }
+  ];
+
+  // Baris admin hanya muncul untuk pemilik bot
+  if (can(userId, 'admin_panel')) {
+    fields.push({ name: '🔧 Owner Commands', value: '• `/admin` — buka panel kontrol bot', inline: false });
+  }
+
   return new EmbedBuilder()
     .setColor('#5865F2')
     .setTitle('🤖 AI Assistant Hybrid Manual Guide')
     .setDescription('Sistem ini mendukung Slash Commands (`/`), Prefix Triggers (`?`), dan tombol interaktif.')
-    .addFields(
-      { name: '🤖 Ask AI', value: 'Klik tombol **🤖 Ask AI** di atas (atau jalankan `/ask` tanpa mengisi prompt) untuk membuka form pertanyaan.', inline: false },
-      { name: '⚡ Prefix Commands (`?`)', value: `• \`${PREFIX}<pertanyaan>\` — langsung tanya AI, mis. \`${PREFIX}hi\`\n• \`${PREFIX}ask [pertanyaan]\` — sama, bentuk eksplisit\n• \`${PREFIX}reset\` — Hapus memori percakapan.\n• \`${PREFIX}help\` — Tampilkan bantuan ini.`, inline: false },
-      { name: '🎯 Slash Commands', value: '• `/ask prompt: [teks] file: [opsional] message_id: [opsional]`\n• `/reset`\n• `/help`\n• `/admin` (owner only)', inline: false }
-    );
+    .addFields(fields);
 }
 
 function sanitizeMessagesForModel(messages, isVisionModel) {
@@ -824,7 +888,7 @@ client.on("interactionCreate", async (interaction) => {
     console.log(`\n[⚡ EVENT] Trigger Slash Command: /${interaction.commandName} oleh ${interaction.user.tag}`);
 
     if (interaction.commandName === "help") {
-      const helpEmbed = buildHelpEmbed();
+      const helpEmbed = buildHelpEmbed(interaction.user.id);
       const actionRow = buildHelpActionRow(interaction.user.id);
 
       return interaction.reply({
@@ -853,12 +917,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "admin") {
-      if (!isAdmin(interaction.user.id)) {
-        return interaction.reply({
-          content: "❌ You don't have permission to use admin commands.",
-          ephemeral: true
-        }).catch(() => {});
-      }
+      if (!(await requireCapability(interaction, 'admin_panel'))) return;
       const adminEmbed = buildAdminPanelEmbed();
       const actionRow = buildAdminActionRow(interaction.user.id);
 
@@ -888,9 +947,28 @@ client.on("interactionCreate", async (interaction) => {
 
     await interaction.deferUpdate(); // Important to prevent "Unknown Interaction" error
 
-    if (userId !== interaction.user.id) {
+    if (!isButtonOwner(interaction, userId)) {
       return interaction.editReply({
-        content: "❌ This button is not for you.",
+        content: "❌ Tombol ini bukan untuk Anda.",
+        components: []
+      }).catch(() => {});
+    }
+
+    // Lapisan kedua: setiap aksi yang butuh hak khusus dicek di sini juga,
+    // sehingga tombol lama (mis. embed yang sudah terkirim) tidak bisa dipakai
+    // untuk menembus fitur yang seharusnya tersembunyi.
+    const ACTION_CAPABILITY = {
+      admin_panel: 'admin_panel',
+      admin_stats: 'admin_stats',
+      admin_clear: 'admin_clear_sessions',
+      admin_reload: 'admin_reload_commands',
+      admin_config: 'admin_view_config',
+    };
+    const requiredCap = ACTION_CAPABILITY[action];
+    if (requiredCap && !can(interaction.user.id, requiredCap)) {
+      console.warn(`[🔒 DENY] ${interaction.user.tag} menembus tombol "${action}"`);
+      return interaction.editReply({
+        content: "❌ Fitur ini tidak tersedia untuk Anda.",
         components: []
       }).catch(() => {});
     }
@@ -1000,7 +1078,7 @@ client.on("interactionCreate", async (interaction) => {
 
       // Help navigation buttons
       case 'help_commands': {
-        const helpEmbed = buildHelpEmbed();
+        const helpEmbed = buildHelpEmbed(interaction.user.id);
         await interaction.editReply({
           embeds: [helpEmbed],
           components: [buildHelpActionRow(interaction.user.id)]
@@ -1048,12 +1126,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       case 'help_admin': {
-        if (!isAdmin(interaction.user.id)) {
-          return interaction.editReply({
-            content: "❌ You don't have permission to access admin panel.",
-            components: []
-          }).catch(() => {});
-        }
+        if (!(await requireCapability(interaction, 'admin_panel'))) break;
         const adminEmbed = buildAdminPanelEmbed();
         const actionRow = buildAdminActionRow(interaction.user.id, { backToHelp: true });
 
@@ -1066,12 +1139,7 @@ client.on("interactionCreate", async (interaction) => {
 
       // Admin buttons
       case 'admin_stats': {
-        if (!isAdmin(interaction.user.id)) {
-          return interaction.editReply({
-            content: "❌ You don't have permission for admin actions.",
-            components: []
-          }).catch(() => {});
-        }
+        if (!(await requireCapability(interaction, 'admin_stats'))) break;
         const adminEmbed = buildAdminPanelEmbed();
         await interaction.editReply({
           embeds: [adminEmbed],
@@ -1081,12 +1149,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       case 'admin_clear': {
-        if (!isAdmin(interaction.user.id)) {
-          return interaction.editReply({
-            content: "❌ You don't have permission for admin actions.",
-            components: []
-          }).catch(() => {});
-        }
+        if (!(await requireCapability(interaction, 'admin_clear_sessions'))) break;
         sessions.clear();
         userModelPreference.clear();
         await interaction.editReply({
@@ -1097,12 +1160,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       case 'admin_reload': {
-        if (!isAdmin(interaction.user.id)) {
-          return interaction.editReply({
-            content: "❌ You don't have permission for admin actions.",
-            components: []
-          }).catch(() => {});
-        }
+        if (!(await requireCapability(interaction, 'admin_reload_commands'))) break;
         try {
           const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
           await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -1120,12 +1178,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       case 'admin_config': {
-        if (!isAdmin(interaction.user.id)) {
-          return interaction.editReply({
-            content: "❌ You don't have permission for admin actions.",
-            components: []
-          }).catch(() => {});
-        }
+        if (!(await requireCapability(interaction, 'admin_view_config'))) break;
         const configEmbed = new EmbedBuilder()
           .setColor('#FF0000')
           .setTitle('⚙️ Bot Configuration')
