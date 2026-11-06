@@ -1,0 +1,21 @@
+name: VPS Pinger
+
+on:
+  schedule:
+    - cron: "*/20 * * * *" # setiap 10 menit
+  workflow_dispatch: # bisa dijalankan manual
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: SSH ping
+        env:
+          TARGET: ${{ secrets.INSTABOX_SSH_TARGET }}
+        run: |
+          ssh -p 2222 \
+            -o StrictHostKeyChecking=accept-new \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            "$TARGET" "date && uptime && sleep 5"
