@@ -2,20 +2,27 @@ name: VPS Pinger
 
 on:
   schedule:
-    - cron: "*/20 * * * *" # setiap 10 menit
-  workflow_dispatch: # bisa dijalankan manual
+    - cron: "*/20 * * * *" # setiap 20 menit
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
+      - name: Jeda acak
+        run: |
+          DELAY=$((RANDOM % 46 + 5))   # 5-50 detik
+          echo "Menunggu ${DELAY} detik"
+          sleep $DELAY
+
       - name: SSH ping
         env:
           TARGET: ${{ secrets.INSTABOX_SSH_TARGET }}
         run: |
+          HOLD=$((RANDOM % 8 + 3))     # sesi bertahan 3-10 detik
           ssh -p 2222 \
             -o StrictHostKeyChecking=accept-new \
             -o BatchMode=yes \
             -o ConnectTimeout=20 \
-            "$TARGET" "date && uptime && sleep 5"
+            "$TARGET" "date && uptime && sleep $HOLD"
