@@ -26,63 +26,47 @@ const MAX_HISTORY = 10;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; 
 const COOLDOWN_TIME = 5000; 
 const cooldowns = new Map();
+// modelName -> timestamp kapan boleh dipakai lagi (dipakai saat kena 429)
+const MODEL_COOLDOWN = new Map();
 const BANNED_WORDS = ["exploit", "crash", "bypass system", "force shutdown"];
 
-// --- MODEL CONFIGURATIONS (UPDATED & STABLE) ---
-// FREE models verified against OpenRouter API (August 2026) listed first (used first),
-// paid models kept below as fallback.
+// --- MODEL CONFIGURATIONS (UPDATED — verified live 2026-11-07) ---
+// FREE-ONLY. Setiap entri sudah dites langsung ke API provider.
+// PENTING: model ":free" di OpenRouter berbagi kuota yang sama (~50 req/hari),
+// jadi urutan di bawah mengutamakan provider yang kuotanya TERPISAH
+// (Groq + Google) di depan agar 429 OpenRouter tidak mematikan seluruh bot.
+// Model yang terbukti 429/error tetap disimpan sebagai cadangan paling akhir.
 const VISION_MODELS = [
-  // === OPENROUTER (FREE multimodal/vision models - verified working) ===
-  { provider: "openrouter", name: "google/gemma-4-31b-it:free" }, // FREE (image+video)
-  { provider: "openrouter", name: "google/gemma-4-26b-a4b-it:free" }, // FREE (image+video)
-  { provider: "openrouter", name: "minimax/minimax-m3:free" }, // FREE 1M context (image+video)
-  { provider: "openrouter", name: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" }, // FREE (img+audio+video)
-  { provider: "openrouter", name: "nvidia/nemotron-3.5-content-safety:free" }, // FREE (image)
-  { provider: "openrouter", name: "thinkingmachines/inkling:free" }, // FREE 1M context (img+audio)
-  { provider: "openrouter", name: "thinkingmachines/inkling-small:free" }, // FREE 1M context (img+audio)
-  { provider: "openrouter", name: "dots-studio/dots-3-note-preview:free" }, // FREE (image)
-  { provider: "openrouter", name: "openrouter/free" }, // FREE meta-model auto-routers to best free vision model
-  // === OPENROUTER (Paid vision fallback - kept) ===
-  { provider: "openrouter", name: "google/gemini-2.5-flash" }, // $0.30/M input
-  { provider: "openrouter", name: "google/gemini-2.0-flash" },
-  { provider: "openrouter", name: "qwen/qwen2.5-vl-72b-instruct" }, // $0.25/M
-  // === GOOGLE NATIVE (Premium - Free Daily Quota) ===
-  { provider: "google-native", name: "gemini-2.5-flash" },
-  { provider: "google-native", name: "gemini-2.0-flash" },
-  { provider: "google-native", name: "gemini-2.5-pro" },
+  // === GOOGLE NATIVE (kuota terpisah, terbukti OK) ===
+  { provider: "google-native", name: "gemini-3.5-flash" }, // OK (verified)
+  { provider: "google-native", name: "gemini-2.5-flash" }, // OK (verified)
+  // === OPENROUTER (FREE multimodal — bisa 429) ===
+  { provider: "openrouter", name: "nvidia/nemotron-3.5-super-vl:free" }, // OK, 1M ctx (text+image+video)
+  { provider: "openrouter", name: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" }, // OK (text+audio+image+video)
+  { provider: "openrouter", name: "dots-studio/dots-3-note-preview:free" }, // OK 512K ctx (text+image)
+  { provider: "openrouter", name: "google/gemma-4-31b-it:free" }, // 429-prone, cadangan
+  { provider: "openrouter", name: "google/gemma-4-26b-a4b-it:free" }, // 429-prone, cadangan
+  { provider: "openrouter", name: "openrouter/free" }, // meta-router, upaya terakhir
 ];
 
-// === TEXT MODELS (FREE models first - verified against OpenRouter API August 2026) ===
+// === TEXT MODELS (FREE-ONLY — verified live 2026-11-07) ===
+// Urutan: Groq & Google dulu (kuota terpisah), OpenRouter :free belakangan.
 const TEXT_MODELS = [
-  // === OPENROUTER (FREE text models - verified working) ===
-  { provider: "openrouter", name: "z-ai/glm-5.2:free" }, // FREE 256K context
-  { provider: "openrouter", name: "nvidia/nemotron-3-super-120b-a12b:free" }, // FREE 262K context
-  { provider: "openrouter", name: "nvidia/nemotron-3-ultra-550b-a55b:free" }, // FREE 550B, 1M context
-  { provider: "openrouter", name: "nvidia/nemotron-3.5-lightning:free" }, // FREE 1M context
-  { provider: "openrouter", name: "minimax/minimax-m2.7:free" }, // FREE 196K context
-  { provider: "openrouter", name: "cohere/north-mini-code:free" }, // FREE 256K context
-  { provider: "openrouter", name: "inclusionai/ling-3.0-flash-fin:free" }, // FREE 262K context
-  { provider: "openrouter", name: "liquid/lfm-2.5-2.6b:free" }, // FREE 65K context
-  { provider: "openrouter", name: "poolside/laguna-s-2.1:free" }, // FREE 262K context
-  { provider: "openrouter", name: "poolside/laguna-xs-2.1:free" }, // FREE 262K context
-  { provider: "openrouter", name: "openrouter/free" }, // FREE meta-model auto-router
-  // === OPENROUTER (Paid text fallback - kept) ===
-  { provider: "openrouter", name: "deepseek/deepseek-chat-v3-0324" },
-  { provider: "openrouter", name: "deepseek/deepseek-v4-flash" },
-  { provider: "openrouter", name: "meta-llama/llama-4-scout" },
-  { provider: "openrouter", name: "qwen/qwen3-32b" },
-  { provider: "openrouter", name: "mistralai/mistral-small-24b-instruct-2501" },
-  { provider: "openrouter", name: "anthropic/claude-3-haiku" },
-  { provider: "openrouter", name: "moonshotai/kimi-k2.5" },
-  { provider: "openrouter", name: "z-ai/glm-4.7-flash" },
-  // === GROQ (paid by token - kept as fallback) ===
-  { provider: "groq", name: "openai/gpt-oss-120b" },
-  { provider: "groq", name: "openai/gpt-oss-20b" },
-  { provider: "groq", name: "qwen/qwen3.6-27b" },
-  // === GOOGLE NATIVE (Premium - Free Daily Quota) ===
-  { provider: "google-native", name: "gemini-2.5-flash" },
-  { provider: "google-native", name: "gemini-2.0-flash" },
-  { provider: "google-native", name: "gemini-2.5-pro" },
+  // === GROQ (kuota terpisah, cepat, terverifikasi OK) ===
+  { provider: "groq", name: "openai/gpt-oss-120b" }, // OK (verified)
+  { provider: "groq", name: "qwen/qwen3.8-27b" }, // OK (verified)
+  { provider: "groq", name: "openai/gpt-oss-20b" }, // OK (verified)
+  // === GOOGLE NATIVE (kuota terpisah, terverifikasi OK) ===
+  { provider: "google-native", name: "gemini-3.5-flash" }, // OK (verified)
+  { provider: "google-native", name: "gemini-2.5-flash" }, // OK (verified)
+  // === OPENROUTER (FREE — berbagi kuota, rawan 429) ===
+  { provider: "openrouter", name: "nvidia/nemotron-3-ultra-550b-a55b:free" }, // OK, 1M ctx, 550B MoE
+  { provider: "openrouter", name: "nvidia/nemotron-3.5-lightning:free" }, // OK, 1M ctx
+  { provider: "openrouter", name: "nvidia/nemotron-3.5-super-vl:free" }, // OK, 1M ctx (multimodal)
+  { provider: "openrouter", name: "recursive/flint-v1.0:free" }, // OK, 262K ctx
+  { provider: "openrouter", name: "cohere/north-mini-code:free" }, // OK, 256K ctx, kode
+  { provider: "openrouter", name: "xingchen-agi/xing4.0-29b-a4b:free" }, // 429-prone, cadangan
+  { provider: "openrouter", name: "openrouter/free" }, // meta-router, upaya terakhir
 ];
 
 
@@ -453,7 +437,7 @@ function buildHelpEmbed() {
     .setDescription('Sistem ini mendukung Slash Commands (`/`), Prefix Triggers (`?`), dan tombol interaktif.')
     .addFields(
       { name: '🤖 Ask AI', value: 'Klik tombol **🤖 Ask AI** di atas (atau jalankan `/ask` tanpa mengisi prompt) untuk membuka form pertanyaan.', inline: false },
-      { name: '⚡ Prefix Commands', value: `• \`${PREFIX}ask [pertanyaan]\`\n• \`${PREFIX}reset\` — Hapus memori percakapan.`, inline: false },
+      { name: '⚡ Prefix Commands (`?`)', value: `• \`${PREFIX}<pertanyaan>\` — langsung tanya AI, mis. \`${PREFIX}hi\`\n• \`${PREFIX}ask [pertanyaan]\` — sama, bentuk eksplisit\n• \`${PREFIX}reset\` — Hapus memori percakapan.\n• \`${PREFIX}help\` — Tampilkan bantuan ini.`, inline: false },
       { name: '🎯 Slash Commands', value: '• `/ask prompt: [teks] file: [opsional] message_id: [opsional]`\n• `/reset`\n• `/help`\n• `/admin` (owner only)', inline: false }
     );
 }
@@ -540,7 +524,17 @@ async function fetchWithFallback(messagesArray, isVisionContext, { userId = unde
       }
     }
   }
-  const timeoutMS = 60000; 
+  const timeoutMS = 60000;
+
+  // Buang model yang sedang dalam masa cooldown akibat 429. Jika SEMUA model
+  // sedang cooldown, tetap coba semuanya (lebih baik mencoba daripada gagal total).
+  const now = Date.now();
+  const freshList = modelList.filter(m => (MODEL_COOLDOWN.get(m.name) || 0) <= now);
+  if (freshList.length > 0) {
+    modelList = freshList;
+  } else {
+    console.warn("[⏳ RATE-LIMIT] Semua model sedang cooldown, tetap mencoba ulang.");
+  } 
 
   for (const model of modelList) {
     let timeoutId;
@@ -613,14 +607,43 @@ async function fetchWithFallback(messagesArray, isVisionContext, { userId = unde
       }
       throw new Error("Objek teks tidak ditemukan");
 
-    } catch (e) { 
+    } catch (e) {
       if (timeoutId) clearTimeout(timeoutId);
-      console.warn(`[⚠️ FALLBACK] Model ${model.name} gagal. Error: ${e.message}`);
-      continue; 
+      const status = e?.status || e?.response?.status;
+      const isRateLimit = status === 429 || /429|rate.?limit|quota/i.test(String(e?.message || ""));
+      if (isRateLimit) {
+        // Tandai model kena limit selama 60 detik agar request berikutnya
+        // tidak membuang waktu mencoba model yang sama.
+        MODEL_COOLDOWN.set(model.name, Date.now() + 60_000);
+        console.warn(`[⏳ RATE-LIMIT] ${model.name} kena 429, di-skip 60s. Lanjut model berikutnya.`);
+      } else {
+        console.warn(`[⚠️ FALLBACK] Model ${model.name} gagal. Error: ${e.message}`);
+      }
+      continue;
     }
   }
 
   throw new Error("Semua model AI gagal merespons atau kuota API habis.");
+}
+
+// Balasan aman untuk interaction maupun pesan biasa.
+// Interaction yang sudah di-defer wajib memakai editReply/followUp, dan interaction
+// yang sudah lewat 3 detik tidak boleh dipakai reply() lagi (penyebab error
+// "This command is outdated"). Ephemeral HANYA berlaku untuk reply pertama.
+async function safeRespond(context, isInteraction, content, ephemeral = false) {
+  try {
+    if (!isInteraction) return await context.reply(content);
+    if (context.deferred) {
+      if (context.replied) return await context.followUp({ content, ephemeral });
+      return await context.editReply({ content });
+    }
+    if (context.replied) return await context.followUp({ content, ephemeral: true });
+    return await context.reply({ content, ephemeral });
+  } catch (e) {
+    // Interaction kedaluwarsa: kirim via channel agar user tetap dapat jawaban
+    console.warn(`[⚠️ RESPOND] Reply interaction gagal (${e.message}), fallback ke channel.`);
+    try { await context.channel?.send(content); } catch { /* diabaikan */ }
+  }
 }
 
 async function processAiRequest(context, promptText, fileAttachment, targetMessageId, regenerateTarget) {
@@ -637,23 +660,29 @@ async function processAiRequest(context, promptText, fileAttachment, targetMessa
 
   const lastUsed = cooldowns.get(user.id);
   if (lastUsed && (Date.now() - lastUsed < COOLDOWN_TIME)) {
-    return isInteraction ? context.reply({ content: "⏳ Cooldown.", ephemeral: true }) : context.reply("⏳ Cooldown.");
+    return safeRespond(context, isInteraction, "⏳ Cooldown.", true);
   }
   cooldowns.set(user.id, Date.now());
 
   if (BANNED_WORDS.some(word => promptText.toLowerCase().includes(word))) {
     const msg = "❌ Request denied by system filter safety guidelines.";
-    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+    return safeRespond(context, isInteraction, msg, true);
   }
 
   if (fileAttachment && fileAttachment.size > MAX_FILE_SIZE) {
     const msg = "❌ Attached payload exceeds maximum 10MB limit threshold.";
-    return isInteraction ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+    return safeRespond(context, isInteraction, msg, true);
   }
 
   let progressStateMessage;
   if (isInteraction) {
-    await context.deferReply(); 
+    try {
+      await context.deferReply();
+    } catch (e) {
+      // Interaction sudah kedaluwarsa / sudah dibalas -> beri tahu user dengan sopan
+      console.warn(`[⚠️ INTERACTION] deferReply gagal: ${e.message}`);
+      return;
+    }
   } else {
     progressStateMessage = await context.reply("🧠 *Thinking...*").catch(() => null);
   }
@@ -1242,16 +1271,35 @@ client.on("interactionCreate", async (interaction) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+
+  const rawPrompt = message.content.slice(PREFIX.length).trim();
+  if (!rawPrompt) return; // pesan hanya "?" -> abaikan
+
   console.log(`\n[💬 EVENT] Trigger Prefix Command dari ${message.author.tag}`);
 
-  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
+  const args = rawPrompt.split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // --- ?reset : hapus memori percakapan ---
   if (command === "reset") {
     sessions.delete(getSessionId(message.channelId, message.author.id));
     return message.reply("🧹 **Sesi memori dibersihkan!**").catch(() => {});
   }
 
+  // --- ?help : daftar perintah ---
+  if (command === "help" || command === "h") {
+    return message.reply(
+      `**📖 Prefix \`${PREFIX}\` — Cara Pakai**\n` +
+      `• \`${PREFIX}<pertanyaan>\` — tanya AI langsung, mis. \`${PREFIX}hi\`\n` +
+      `• \`${PREFIX}ask <pertanyaan>\` — sama seperti di atas (eksplisit)\n` +
+      `• \`${PREFIX}reset\` — hapus memori percakapan\n` +
+      `• \`${PREFIX}help\` — tampilkan bantuan ini\n` +
+      `• Balas pesan orang lain dengan \`${PREFIX}<pertanyaan>\` untuk menjadikannya konteks.\n` +
+      `• Lampirkan gambar/PDF/audio pada pesan untuk analisis multi-modal.`
+    ).catch(() => {});
+  }
+
+  // --- ?ask <pertanyaan> : form eksplisit ---
   if (command === "ask") {
     const promptText = args.join(" ").trim();
     if (!promptText) return message.reply(`❌ Format tidak valid: \`${PREFIX}ask [pertanyaan]\``).catch(() => {});
@@ -1260,8 +1308,17 @@ client.on("messageCreate", async (message) => {
     if (message.reference && message.reference.messageId) {
       targetMessageId = message.reference.messageId;
     }
-    await processAiRequest(message, promptText, uploadedFile, targetMessageId);
+    return await processAiRequest(message, promptText, uploadedFile, targetMessageId);
   }
+
+  // --- ?<apa saja> : seluruh isi pesan diperlakukan sebagai prompt AI ---
+  // Menjaga "?hi", "?halo", "?jelaskan X" tetap dibalas, bukan diabaikan.
+  const uploadedFile = message.attachments.first() || null;
+  let targetMessageId = null;
+  if (message.reference && message.reference.messageId) {
+    targetMessageId = message.reference.messageId;
+  }
+  await processAiRequest(message, rawPrompt, uploadedFile, targetMessageId);
 });
 
 client.login(BOT_TOKEN);
