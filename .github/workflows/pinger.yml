@@ -1,9 +1,11 @@
 name: VPS Pinger
 
 on:
-  schedule:
-    - cron: "*/10 * * * *" # setiap 20 menit
   workflow_dispatch:
+
+concurrency:
+  group: pinger
+  cancel-in-progress: false
 
 jobs:
   ping:
@@ -11,18 +13,21 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Jeda acak
-        run: |
-          DELAY=$((RANDOM % 46 + 5))   # 5-50 detik
-          echo "Menunggu ${DELAY} detik"
-          sleep $DELAY
+        run: sleep $((RANDOM % 30 + 1))
 
-      - name: SSH ping
+      - name: SSH ping (dengan retry)
         env:
           TARGET: ${{ secrets.INSTABOX_SSH_TARGET }}
         run: |
-          HOLD=$((RANDOM % 8 + 3))     # sesi bertahan 3-10 detik
-          ssh -p 2222 \
-            -o StrictHostKeyChecking=accept-new \
-            -o BatchMode=yes \
-            -o ConnectTimeout=20 \
-            "$TARGET" "date && uptime && sleep $HOLD"
+          for i in 1 2 3; do
+            if ssh -p 2222 \
+              -o StrictHostKeyChecking=accept-new \
+              -o BatchMode=yes \
+              -o ConnectTimeout=60 \
+              "$TARGET" "uptime && sleep $((RANDOM % 8 + 3))"; then
+              exit 0
+            fi
+            echo "Percobaan $i gagal, ulangi..."
+            sleep 15
+          done
+          exit 1
