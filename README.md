@@ -2,44 +2,46 @@
 
 # Discord AI Bot
 
-**Multi-provider Discord AI assistant** — satu bot, banyak model LLM, dengan fallback otomatis saat kena rate limit.
+**Multi-provider Discord AI assistant** — one bot, several LLM providers, automatic fallback when a model hits its rate limit.
 
 [![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)](#)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![discord.js](https://img.shields.io/badge/discord.js-v14-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.js.org)
 
+**English** · [Bahasa Indonesia](README.id.md)
+
 </div>
 
 ---
 
-## Tentang
+## About
 
-Bot Discord berbasis **Discord.js v14** yang menghubungkan satu antarmuka chat ke beberapa provider AI sekaligus: **OpenRouter**, **Google Gemini (native)**, dan **Groq**. Fokus utamanya adalah **ketahanan**: ketika satu model kena `429 Too Many Requests`, bot otomatis berpindah ke model berikutnya tanpa mengganggu percakapan.
+A Discord bot built on **Discord.js v14** that puts one chat interface in front of three AI providers at once: **OpenRouter**, **Google Gemini (native)**, and **Groq**. The design goal is resilience — when one model returns `429 Too Many Requests`, the bot moves to the next model instead of dropping the conversation.
 
-## Fitur
+## Features
 
-- **Fallback antar-provider.** Daftar model diurutkan menurut kuota terpisah: Groq & Gemini lebih dulu, OpenRouter di belakang. Saat satu model kena `429`, bot pindah ke model berikutnya dan percakapan tetap jalan.
-- **Cooldown per model.** Model yang kena rate limit ditandai dan dilewati sementara, bukan dicoba terus-menerus.
-- **Input teks, gambar, PDF, dan voice note.** Vision via Gemini, PDF dibaca `pdf-parse`, audio ditranskripsi lewat `fluent-ffmpeg`.
-- **Konteks 10 pesan terakhir** per channel.
-- **Batas 10 MB** per file.
-- **Anti-spam:** cooldown 5 detik per user dan filter kata terlarang.
-- **UI Discord:** slash command, button, select menu, dan modal.
-- **Anti-crash:** handler `unhandledRejection` / `uncaughtException` untuk error jaringan Discord yang biasanya mematikan bot.
+- **Cross-provider fallback.** Models are ordered by separate quota pools: Groq and Gemini first, OpenRouter last. When one hits `429`, the bot switches and the conversation keeps going.
+- **Per-model cooldown.** A rate-limited model is flagged and skipped for a while instead of being retried on every message.
+- **Text, image, PDF, and voice-note input.** Vision runs on Gemini, PDFs are parsed with `pdf-parse`, audio is transcribed through `fluent-ffmpeg`.
+- **Last 10 messages of context** per channel.
+- **10 MB** limit per uploaded file.
+- **Anti-spam:** a 5-second per-user cooldown plus a banned-word filter.
+- **Discord UI:** slash commands, buttons, select menus, and modals.
+- **Anti-crash:** `unhandledRejection` / `uncaughtException` handlers for the Discord network errors that normally kill a bot.
 
 ## Tech Stack
 
-| Bagian | Teknologi |
+| Layer | Technology |
 | --- | --- |
 | Runtime | Node.js 18+ |
 | Library | Discord.js v14 |
-| AI Provider | OpenRouter, Google Generative AI, Groq |
-| Ekstraksi file | `pdf-parse`, `fluent-ffmpeg` |
-| Deploy | PM2 (`ecosystem.config.js`) |
+| AI providers | OpenRouter, Google Generative AI, Groq |
+| File extraction | `pdf-parse`, `fluent-ffmpeg` |
+| Deployment | PM2 (`ecosystem.config.js`) |
 
-## Menjalankan
+## Getting Started
 
-### 1. Clone & install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/Ilhamaji/discord-ai-bot.git
@@ -47,9 +49,9 @@ cd discord-ai-bot
 npm install
 ```
 
-### 2. Buat file `.env`
+### 2. Create `.env`
 
-Semua variabel di bawah **wajib** — bot akan `process.exit(1)` bila salah satu kosong.
+Every variable below is **required** — the bot calls `process.exit(1)` if one is missing.
 
 ```env
 BOT_TOKEN=          # Discord bot token
@@ -58,53 +60,53 @@ GOOGLE_API_KEY=     # Google AI / Gemini API key
 GROQ_API_KEY=       # Groq API key
 ```
 
-Contoh lengkap tersedia di `.env_example`.
+A complete example lives in `.env_example`.
 
-### 3. Jalankan
+### 3. Run
 
 ```bash
 node index.js
 ```
 
-### 4. Deploy ke server (opsional)
+### 4. Deploy to a server (optional)
 
 ```bash
-./deploy.sh          # atau
+./deploy.sh          # or
 pm2 start ecosystem.config.js
 ```
 
-## Cara Pakai
+## Usage
 
-Bot menerima dua gaya perintah.
+The bot accepts two command styles.
 
-**Prefix `?`**
-
-```
-?jelaskan konsep rekursi dengan analogi sederhana
-?ask [pertanyaan]      # bentuk eksplisit
-?reset                 # hapus memori percakapan
-?help                  # tampilkan bantuan
-```
-
-**Slash command** — `/help` dan perintah lain yang didaftarkan saat startup (`Routes.applicationCommands`).
-
-Kirim gambar, PDF, atau voice note bersama teks pertanyaan — bot memilih model vision/audio yang sesuai.
-
-## Struktur
+**`?` prefix**
 
 ```
-index.js              # entrypoint: config provider, model chain, handler pesan
-deploy.sh             # script deploy
-ecosystem.config.js   # konfigurasi PM2
-.env_example          # template environment
+?explain recursion with a simple analogy
+?ask [question]        # explicit form
+?reset                 # clear conversation memory
+?help                  # show help
 ```
 
-## Catatan
+**Slash commands** — `/help` and the others registered on startup (`Routes.applicationCommands`).
 
-Daftar model di `index.js` telah diverifikasi langsung ke tiap provider (lihat komentar `verified live` di dalam kode). Model gratis berbagi kuota harian, jadi urutan model sengaja diatur agar provider dengan kuota terpisah dipakai lebih dulu.
+Send an image, PDF, or voice note together with your question — the bot picks a vision or audio-capable model.
+
+## Project Layout
+
+```
+index.js              # entrypoint: provider config, model chain, message handler
+deploy.sh             # deploy script
+ecosystem.config.js   # PM2 config
+.env_example          # environment template
+```
+
+## Notes
+
+The model list in `index.js` was verified against each provider directly (look for the `verified live` comments in the code). Free models share a daily quota, so the ordering intentionally puts providers with separate quotas first.
 
 ---
 
 <div align="center">
-Dibuat oleh <a href="https://github.com/Ilhamaji">Ilham Aji</a>
+Built by <a href="https://github.com/Ilhamaji">Ilham Aji</a>
 </div>
