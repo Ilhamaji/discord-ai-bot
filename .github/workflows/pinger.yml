@@ -2,7 +2,7 @@ name: VPS Pinger
 
 on:
   schedule:
-    - cron: "*/20 * * * *" # setiap 20 menit
+    - cron: "*/10 * * * *" # setiap 20 menit
   workflow_dispatch:
 
 jobs:
