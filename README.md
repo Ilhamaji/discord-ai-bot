@@ -1,99 +1,110 @@
-# AI Discord Bot
+<div align="center">
 
-An intelligent and versatile Discord chatbot built with **JavaScript** and **Discord.js**. This bot integrates advanced AI models to provide real-time interaction, automated responses, and enhanced community engagement within your Discord server.
-Demo: [AI M](https://discord.com/oauth2/authorize?client_id=1308770920562823228)
+# Discord AI Bot
 
-## 🚀 Features
+**Multi-provider Discord AI assistant** — satu bot, banyak model LLM, dengan fallback otomatis saat kena rate limit.
 
-  * **Real-time AI Interaction**: Natural and fluid conversations powered by [Insert AI Model, e.g., OpenAI/Gemini/Ollama].
-  * **Contextual Awareness**: Remembers previous messages for more coherent and human-like interactions.
-  * **Multi-Modal Support**: Ability to process text and images (depending on the integrated model).
-  * **Slash Commands**: Modern Discord integration using `?` commands for easy usage.
-  * **Highly Customizable**: Easily configurable prefixes, personality traits, and permission levels.
+[![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)](#)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
+[![discord.js](https://img.shields.io/badge/discord.js-v14-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.js.org)
 
-## 🛠️ Built With
+</div>
 
-  * **Language**: [Node.js](https://nodejs.org/) (JavaScript)
-  * **Library**: [Discord.js](https://discord.js.org/)
-  * **Environment**: NPM / Yarn
-  * **AI Engine**: Gemini API , OpenAI API, Etc.
+---
 
-## 📦 Installation
+## Tentang
 
-To host this bot locally or on a server, follow these steps:
+Bot Discord berbasis **Discord.js v14** yang menghubungkan satu antarmuka chat ke beberapa provider AI sekaligus: **OpenRouter**, **Google Gemini (native)**, dan **Groq**. Fokus utamanya adalah **ketahanan**: ketika satu model kena `429 Too Many Requests`, bot otomatis berpindah ke model berikutnya tanpa mengganggu percakapan.
 
-1.  **Clone the repository**
+## Fitur
 
-    ```bash
-    git clone https://github.com/Ilhamaji/ai-bot.git
-    cd ai-bot
-    ```
+- **Fallback antar-provider.** Daftar model diurutkan menurut kuota terpisah: Groq & Gemini lebih dulu, OpenRouter di belakang. Saat satu model kena `429`, bot pindah ke model berikutnya dan percakapan tetap jalan.
+- **Cooldown per model.** Model yang kena rate limit ditandai dan dilewati sementara, bukan dicoba terus-menerus.
+- **Input teks, gambar, PDF, dan voice note.** Vision via Gemini, PDF dibaca `pdf-parse`, audio ditranskripsi lewat `fluent-ffmpeg`.
+- **Konteks 10 pesan terakhir** per channel.
+- **Batas 10 MB** per file.
+- **Anti-spam:** cooldown 5 detik per user dan filter kata terlarang.
+- **UI Discord:** slash command, button, select menu, dan modal.
+- **Anti-crash:** handler `unhandledRejection` / `uncaughtException` untuk error jaringan Discord yang biasanya mematikan bot.
 
-2.  **Install dependencies**
+## Tech Stack
 
-    ```bash
-    npm install
-    ```
+| Bagian | Teknologi |
+| --- | --- |
+| Runtime | Node.js 18+ |
+| Library | Discord.js v14 |
+| AI Provider | OpenRouter, Google Generative AI, Groq |
+| Ekstraksi file | `pdf-parse`, `fluent-ffmpeg` |
+| Deploy | PM2 (`ecosystem.config.js`) |
 
-3.  **Environment Setup**
-    Create a `.env` file in the root directory and add your secret tokens:
+## Menjalankan
 
-    ```env
-    API_KEY= //OpenRemote
-    GOOGLE_API_KEY= //Google
-    GROQ_API_KEY= //Groq
-    BOT_TOKEN= //Bot Token
-    ```
+### 1. Clone & install
 
-4.  **Register Slash Commands** (If applicable)
+```bash
+git clone https://github.com/Ilhamaji/discord-ai-bot.git
+cd discord-ai-bot
+npm install
+```
 
-    ```bash
-    node deploy-commands.js
-    ```
+### 2. Buat file `.env`
 
-## 📋 Usage
+Semua variabel di bawah **wajib** — bot akan `process.exit(1)` bila salah satu kosong.
 
-To start the bot:
+```env
+BOT_TOKEN=          # Discord bot token
+API_KEY=            # OpenRouter API key
+GOOGLE_API_KEY=     # Google AI / Gemini API key
+GROQ_API_KEY=       # Groq API key
+```
+
+Contoh lengkap tersedia di `.env_example`.
+
+### 3. Jalankan
 
 ```bash
 node index.js
 ```
 
-*Or, if you use PM2/Nodemon:*
+### 4. Deploy ke server (opsional)
 
 ```bash
-nodemon index.js
+./deploy.sh          # atau
+pm2 start ecosystem.config.js
 ```
 
-### Example Commands
+## Cara Pakai
 
-  * `?[your question]` — Ask the AI a question (Prefix mode).
+Bot menerima dua gaya perintah.
 
-## ⚙️ Configuration
+**Prefix `?`**
 
-You can modify the bot's behavior in the `config.json` or `settings.js` file:
+```
+?jelaskan konsep rekursi dengan analogi sederhana
+?ask [pertanyaan]      # bentuk eksplisit
+?reset                 # hapus memori percakapan
+?help                  # tampilkan bantuan
+```
 
-  * **Temperature**: Control the creativity of the responses.
-  * **System Prompt**: Define the bot's "personality" (e.g., "You are a helpful assistant").
-  * **Channels**: Restrict the bot to specific text channels.
+**Slash command** — `/help` dan perintah lain yang didaftarkan saat startup (`Routes.applicationCommands`).
 
-## 🤝 Contributing
+Kirim gambar, PDF, atau voice note bersama teks pertanyaan — bot memilih model vision/audio yang sesuai.
 
-1.  Fork the Project.
-2.  Create your Feature Branch (`git checkout -b feature/CoolFeature`).
-3.  Commit your Changes (`git commit -m 'Add some CoolFeature'`).
-4.  Push to the Branch (`git push origin feature/CoolFeature`).
-5.  Open a Pull Request.
+## Struktur
 
-## 📄 License
+```
+index.js              # entrypoint: config provider, model chain, handler pesan
+deploy.sh             # script deploy
+ecosystem.config.js   # konfigurasi PM2
+.env_example          # template environment
+```
 
-Distributed under the **MIT License**. See `LICENSE` for more information.
+## Catatan
 
-## ✉️ Contact
+Daftar model di `index.js` telah diverifikasi langsung ke tiap provider (lihat komentar `verified live` di dalam kode). Model gratis berbagi kuota harian, jadi urutan model sengaja diatur agar provider dengan kuota terpisah dipakai lebih dulu.
 
-**Ilham Aji** - [GitHub Profile](https://www.google.com/search?q=https://github.com/Ilhamaji)  
-Project Link: [https://github.com/Ilhamaji/ai-bot](https://www.google.com/search?q=https://github.com/Ilhamaji/ai-bot)
+---
 
------
-
-*Disclaimer: Ensure you comply with the terms of service of your AI provider and Discord's Developer Policy.*
+<div align="center">
+Dibuat oleh <a href="https://github.com/Ilhamaji">Ilham Aji</a>
+</div>
